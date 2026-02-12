@@ -301,7 +301,10 @@ async function loadPdfFile(
     const { loadPdf } = await import("@/lib/pdf/pdf-loader");
     const { renderPageToImage, tryExtractText } = await import("@/lib/pdf/pdf-renderer");
     const { extractImagesFromPage } = await import("@/lib/pdf/image-extractor");
-    const { extractTextWithOcr } = await import("@/lib/pdf/ocr-client");
+    const { extractTextWithOcr, resetOcrCircuitBreaker, OcrRateLimitError } = await import("@/lib/pdf/ocr-client");
+
+    // Reset circuit breaker for new document
+    resetOcrCircuitBreaker();
 
     const buffer = await file.arrayBuffer();
     const pdfDoc = await loadPdf(buffer);
@@ -433,13 +436,10 @@ async function loadPdfFile(
             isEdited: false,
           }));
 
-          // Only prefer OCR over text layer if extremely fragmented
-          if (merged.length > 50 && avgLen < 2) {
-            needsOcr = true;
-          } else {
-            textElements = textLayerElements;
-            needsOcr = false;
-          }
+          // Always use text layer if available - OCR only when text layer is completely empty
+          // Previous condition (merged.length > 50 && avgLen < 2) triggered unnecessary OCR
+          textElements = textLayerElements;
+          needsOcr = false;
         } else {
           needsOcr = true;
         }
@@ -464,12 +464,17 @@ async function loadPdfFile(
           }
         } catch (err) {
           const errMsg = err instanceof Error ? err.message : String(err);
-          console.warn(`[Page ${i}] OCR failed:`, errMsg);
+          const isCircuitBreaker = err instanceof OcrRateLimitError;
+          console.warn(`[Page ${i}] OCR failed${isCircuitBreaker ? " (circuit breaker)" : ""}:`, errMsg);
 
           // Record OCR error once
           if (!ocrErrorMsg) {
             ocrErrorMsg = errMsg;
-            warnings.push(`OCR 실패: ${errMsg}`);
+            if (isCircuitBreaker) {
+              warnings.push("OCR 실패: API 한도 초과 - 텍스트 레이어로 대체합니다");
+            } else {
+              warnings.push(`OCR 실패: ${errMsg}`);
+            }
           }
 
           // Use text layer as fallback

@@ -191,6 +191,12 @@ export default function FileUploader() {
                 />
               </div>
             )}
+            {processingStatus.stage === "ocr-processing" && (
+              <div className="text-xs text-muted text-left mt-2 max-w-xs space-y-1">
+                <p>{t("status.ocrHint")}</p>
+                <p>{t("status.recommendPdf")}</p>
+              </div>
+            )}
           </>
         ) : (
           <>

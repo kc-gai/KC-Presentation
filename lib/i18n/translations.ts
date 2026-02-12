@@ -240,6 +240,18 @@ export const translations = {
     en: "Translate another file",
   },
 
+  // OCR processing hint
+  "status.ocrHint": {
+    ko: "OCR 엔진이 Gemini에 연동되어 있습니다. Claude 등 고성능 AI 연동 시 더 빠른 추출이 가능합니다.",
+    ja: "OCRエンジンはGeminiに連動しています。Claude等の高性能AI連動でより高速な抽出が可能です。",
+    en: "OCR engine is connected to Gemini. Faster extraction is possible with Claude or other high-performance AI.",
+  },
+  "status.recommendPdf": {
+    ko: "발표자료는 Google NotebookLM에서 작성된 슬라이드 PDF를 권장합니다.",
+    ja: "発表資料はGoogle NotebookLMで作成されたスライドPDFを推奨します。",
+    en: "For presentations, slide PDFs created in Google NotebookLM are recommended.",
+  },
+
   // Canvas
   "canvas.noElements": {
     ko: "텍스트/이미지 추출 실패 - 배경 이미지로 내보내기됩니다",

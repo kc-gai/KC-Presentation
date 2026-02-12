@@ -1,17 +1,18 @@
+import { useEffect } from "react";
 import { create } from "zustand";
 import { translations, type UILanguage, type TranslationKey } from "./translations";
 
 interface I18nStore {
   uiLanguage: UILanguage;
+  hydrated: boolean;
   setUILanguage: (lang: UILanguage) => void;
+  hydrate: () => void;
 }
 
-function getInitialLanguage(): UILanguage {
-  if (typeof window === "undefined") return "ko";
+function getStoredLanguage(): UILanguage {
   const stored = localStorage.getItem("ui-language");
   if (stored === "ko" || stored === "ja" || stored === "en") return stored;
 
-  // Auto-detect from browser
   const browserLang = navigator.language.toLowerCase();
   if (browserLang.startsWith("ja")) return "ja";
   if (browserLang.startsWith("en")) return "en";
@@ -19,17 +20,23 @@ function getInitialLanguage(): UILanguage {
 }
 
 export const useI18nStore = create<I18nStore>((set) => ({
-  uiLanguage: getInitialLanguage(),
+  uiLanguage: "ko",
+  hydrated: false,
   setUILanguage: (lang: UILanguage) => {
-    if (typeof window !== "undefined") {
-      localStorage.setItem("ui-language", lang);
-    }
+    localStorage.setItem("ui-language", lang);
     set({ uiLanguage: lang });
+  },
+  hydrate: () => {
+    set({ uiLanguage: getStoredLanguage(), hydrated: true });
   },
 }));
 
 export function useI18n() {
-  const { uiLanguage, setUILanguage } = useI18nStore();
+  const { uiLanguage, setUILanguage, hydrated, hydrate } = useI18nStore();
+
+  useEffect(() => {
+    if (!hydrated) hydrate();
+  }, [hydrated, hydrate]);
 
   const t = (key: TranslationKey): string => {
     const entry = translations[key];
