@@ -55,7 +55,7 @@ export default function SlideCanvas({
           alt={`Slide ${slide.pageIndex + 1}`}
           fill
           className={`object-contain pointer-events-none ${
-            hasExtractedElements ? "opacity-30" : "opacity-100"
+            hasExtractedElements ? "opacity-0" : "opacity-100"
           }`}
           unoptimized
           priority

@@ -354,7 +354,6 @@ async function loadPdfFile(
       // Extract text - try text layer first, fall back to OCR if poor results
       const { hasText, text: rawText } = await tryExtractText(page);
       let textElements: TextElement[] = [];
-      let needsOcr = !hasText;
       let textLayerElements: TextElement[] = [];
 
       console.log(`[Page ${i}] Text layer: hasText=${hasText}, chars=${rawText.length}, preview="${rawText.slice(0, 60)}"`);
@@ -438,61 +437,57 @@ async function loadPdfFile(
             isEdited: false,
           }));
 
-          // Always use text layer if available - OCR only when text layer is completely empty
-          // Previous condition (merged.length > 50 && avgLen < 2) triggered unnecessary OCR
           textElements = textLayerElements;
-          needsOcr = false;
-        } else {
-          needsOcr = true;
         }
       }
 
-      // OCR fallback
-      if (needsOcr) {
-        set({
-          processingStatus: {
-            stage: "ocr-processing",
-            current: i,
-            total: numPages,
-          },
-        });
+      // Always run OCR for comprehensive visual element detection
+      // (images, diagrams, charts, tables, logos - even when text layer succeeds)
+      set({
+        processingStatus: {
+          stage: "ocr-processing",
+          current: i,
+          total: numPages,
+        },
+      });
 
-        try {
-          const ocrResult = await extractTextWithOcr(rendered.fullImageBase64);
-          if (ocrResult.textElements.length > 0) {
-            textElements = ocrResult.textElements;
-          } else if (textLayerElements.length > 0) {
-            textElements = textLayerElements;
-          }
-          // Crop OCR-detected image regions (diagrams, charts, etc.)
-          if (ocrResult.imageRegions.length > 0 && imageElements.length === 0) {
-            try {
-              const croppedImages = await cropImageRegions(rendered.fullImage, ocrResult.imageRegions);
-              imageElements = croppedImages;
-              console.log(`[Page ${i}] Cropped ${croppedImages.length} image regions from OCR`);
-            } catch (cropErr) {
-              console.warn(`[Page ${i}] Image region cropping failed:`, cropErr);
-            }
-          }
-        } catch (err) {
-          const errMsg = err instanceof Error ? err.message : String(err);
-          const isCircuitBreaker = err instanceof OcrRateLimitError;
-          console.warn(`[Page ${i}] OCR failed${isCircuitBreaker ? " (circuit breaker)" : ""}:`, errMsg);
+      try {
+        const ocrResult = await extractTextWithOcr(rendered.fullImageBase64);
 
-          // Record OCR error once
-          if (!ocrErrorMsg) {
-            ocrErrorMsg = errMsg;
-            if (isCircuitBreaker) {
-              warnings.push("OCR 실패: API 한도 초과 - 텍스트 레이어로 대체합니다");
-            } else {
-              warnings.push(`OCR 실패: ${errMsg}`);
-            }
-          }
+        // Text: prefer text layer (more accurate), use OCR text as fallback
+        if (textElements.length === 0 && ocrResult.textElements.length > 0) {
+          textElements = ocrResult.textElements;
+        }
 
-          // Use text layer as fallback
-          if (textLayerElements.length > 0) {
-            textElements = textLayerElements;
+        // Images: always extract OCR-detected visual regions
+        // (diagrams, charts, tables, network diagrams, logos, photos, etc.)
+        if (ocrResult.imageRegions.length > 0) {
+          try {
+            const croppedImages = await cropImageRegions(rendered.fullImage, ocrResult.imageRegions);
+            imageElements = [...imageElements, ...croppedImages];
+            console.log(`[Page ${i}] Cropped ${croppedImages.length} image regions from OCR`);
+          } catch (cropErr) {
+            console.warn(`[Page ${i}] Image region cropping failed:`, cropErr);
           }
+        }
+      } catch (err) {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        const isCircuitBreaker = err instanceof OcrRateLimitError;
+        console.warn(`[Page ${i}] OCR failed${isCircuitBreaker ? " (circuit breaker)" : ""}:`, errMsg);
+
+        // Record OCR error once
+        if (!ocrErrorMsg) {
+          ocrErrorMsg = errMsg;
+          if (isCircuitBreaker) {
+            warnings.push("OCR 실패: API 한도 초과 - 텍스트 레이어로 대체합니다");
+          } else {
+            warnings.push(`OCR 실패: ${errMsg}`);
+          }
+        }
+
+        // Text layer as fallback when OCR fails
+        if (textElements.length === 0 && textLayerElements.length > 0) {
+          textElements = textLayerElements;
         }
       }
 

@@ -1,31 +1,46 @@
 import { NextRequest, NextResponse } from "next/server";
 import { GoogleGenerativeAI } from "@google/generative-ai";
 
-const OCR_PROMPT = `You are an OCR engine that extracts text and identifies visual elements from presentation slide images.
+const OCR_PROMPT = `You are a precise visual element extractor for presentation slides. Your goal is to identify and locate EVERY visual element on the slide so it can be reconstructed as an editable document.
 
 ## Text Elements
-For each text block you find, return:
-- "text": exact text content (preserve line breaks within a block)
-- "x": x position as percentage (0-100) from left edge
-- "y": y position as percentage (0-100) from top edge
+For each text block found, return:
+- "text": exact text content (preserve line breaks, bullet points, numbering within a block)
+- "x": x position as percentage (0-100) from left edge of slide
+- "y": y position as percentage (0-100) from top edge of slide
 - "width": width as percentage (0-100) of the slide
 - "height": height as percentage (0-100) of the slide
-- "fontSize": font size as percentage of the slide height (a large title is typically 6-10, body text 3-5, small text 1.5-2.5)
+- "fontSize": font size as percentage of slide height (large title: 6-10, subtitle: 4-6, body: 2.5-4, small/footnote: 1.5-2.5)
 
-Group text that belongs together (same paragraph/heading) into one block.
-Be very precise with position estimates.
+Rules for text:
+- Group text that belongs together (same heading, same paragraph, same bullet list) into ONE block
+- Keep bullet points and numbered items as one block with line breaks
+- Be extremely precise with bounding box positions - they must tightly fit the actual text
+- Table cell text should be included as text elements with precise cell positions
 
 ## Image Regions
-Identify significant non-text visual elements: diagrams, charts, logos, illustrations, photos, graphs, network diagrams, architecture diagrams, or any visual graphic area.
-For each, return:
-- "x", "y", "width", "height": bounding box as percentages (0-100)
-Do NOT include: full-slide backgrounds, tiny decorative elements, or elements smaller than 3% of the slide.
+Identify ALL non-text visual elements. Each region must be detected separately:
+- Diagrams (network, architecture, flow, sequence, ER diagrams)
+- Charts and graphs (bar, pie, line, scatter, etc.)
+- Tables (the table structure/grid itself, excluding text inside)
+- Logos and icons (company logos, product icons)
+- Photos and illustrations
+- Decorative shapes with visual content (colored boxes, banners with gradients)
+- Arrows and connectors between elements (if substantial)
+
+For each visual region, return:
+- "x", "y", "width", "height": tight bounding box as percentages (0-100)
+
+Do NOT include as image regions:
+- Pure text with no visual decoration
+- The slide background color/gradient
+- Tiny dots or thin lines (under 2% of slide in both dimensions)
 
 ## Output Format
-Return ONLY a valid JSON object (no markdown, no code blocks, no explanation):
-{"textElements":[{"text":"Title","x":5,"y":3,"width":90,"height":8,"fontSize":7.0}],"imageRegions":[{"x":55,"y":15,"width":40,"height":60}]}
+Return ONLY valid JSON (no markdown, no code blocks, no explanation):
+{"textElements":[{"text":"Title Text","x":5,"y":3,"width":90,"height":8,"fontSize":7.0}],"imageRegions":[{"x":55,"y":15,"width":40,"height":60}]}
 
-If no image regions found, return empty imageRegions array.`;
+IMPORTANT: Detect every visible element. Missing elements means the reconstructed slide will have gaps.`;
 
 type OcrTextElement = {
   text: string;
