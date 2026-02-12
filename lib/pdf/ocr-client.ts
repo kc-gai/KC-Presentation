@@ -11,6 +11,8 @@ interface OcrResponse {
     width: number;
     height: number;
     fontSize: number;
+    fontWeight?: "bold" | "normal";
+    fontColor?: string;
   }>;
   imageRegions?: Array<{
     x: number;
@@ -166,8 +168,8 @@ export async function extractTextWithOcr(
           width: el.width,
           height: el.height,
           fontSize: el.fontSize,
-          fontColor: "#000000",
-          fontWeight: "normal" as const,
+          fontColor: el.fontColor || "#000000",
+          fontWeight: el.fontWeight === "bold" ? "bold" as const : "normal" as const,
           textAlign: "left" as const,
           isEdited: false,
         })),

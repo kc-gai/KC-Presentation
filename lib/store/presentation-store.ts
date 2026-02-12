@@ -351,98 +351,8 @@ async function loadPdfFile(
         console.warn(`[Page ${i}] Image extraction failed:`, err);
       }
 
-      // Extract text - try text layer first, fall back to OCR if poor results
-      const { hasText, text: rawText } = await tryExtractText(page);
-      let textElements: TextElement[] = [];
-      let textLayerElements: TextElement[] = [];
-
-      console.log(`[Page ${i}] Text layer: hasText=${hasText}, chars=${rawText.length}, preview="${rawText.slice(0, 60)}"`);
-
-      if (hasText) {
-        const content = await page.getTextContent();
-        const viewport = page.getViewport({ scale: 1.0 });
-
-        const rawItems: Array<{
-          text: string;
-          x: number;
-          y: number;
-          width: number;
-          height: number;
-          fontSize: number;
-        }> = [];
-
-        for (const item of content.items) {
-          if (!("str" in item) || !item.str.trim()) continue;
-
-          const tx = item.transform[4];
-          const ty = item.transform[5];
-          const fontSizePt = Math.sqrt(
-            item.transform[0] ** 2 + item.transform[1] ** 2
-          );
-          const fontSizePct = (fontSizePt / viewport.height) * 100;
-
-          rawItems.push({
-            text: item.str.normalize("NFC"),
-            x: (tx / viewport.width) * 100,
-            y: ((viewport.height - ty) / viewport.height) * 100,
-            width: ((item.width || fontSizePt * item.str.length * 0.6) / viewport.width) * 100,
-            height: fontSizePct * 1.3,
-            fontSize: fontSizePct,
-          });
-        }
-
-        console.log(`[Page ${i}] Raw items: ${rawItems.length}`);
-
-        if (rawItems.length > 0) {
-          rawItems.sort((a, b) => a.y - b.y || a.x - b.x);
-
-          const merged: typeof rawItems = [];
-          let cur = { ...rawItems[0] };
-
-          for (let j = 1; j < rawItems.length; j++) {
-            const item = rawItems[j];
-            const yTol = Math.max(cur.height, item.height) * 0.7;
-            const xGap = item.x - (cur.x + cur.width);
-
-            if (Math.abs(item.y - cur.y) <= yTol && xGap < 3) {
-              const space = xGap > 0.5 ? " " : "";
-              cur.text += space + item.text;
-              cur.width = Math.max(cur.width, item.x + item.width - cur.x);
-              cur.height = Math.max(cur.height, item.height);
-              cur.fontSize = Math.max(cur.fontSize, item.fontSize);
-            } else {
-              merged.push(cur);
-              cur = { ...item };
-            }
-          }
-          merged.push(cur);
-
-          const avgLen = merged.reduce((s, m) => s + m.text.length, 0) / merged.length;
-          console.log(`[Page ${i}] Merged blocks: ${merged.length}, avgLen: ${avgLen.toFixed(1)}`);
-
-          // Always build text elements from text layer
-          textLayerElements = merged.map((m) => ({
-            id: uuidv4(),
-            text: m.text,
-            textKo: "",
-            textJa: "",
-            x: Math.max(0, Math.min(100, m.x)),
-            y: Math.max(0, Math.min(100, m.y)),
-            width: Math.max(1, Math.min(100, m.width)),
-            height: Math.max(1, Math.min(100, m.height)),
-            fontSize: m.fontSize,
-            fontColor: "#000000",
-            fontWeight: "normal" as const,
-            textAlign: "left" as const,
-            isEdited: false,
-          }));
-
-          textElements = textLayerElements;
-        }
-      }
-
-      // Always run OCR for comprehensive visual element detection
-      // (images, diagrams, charts, tables, logos - even when text layer succeeds)
+      // OCR-based extraction: text with font info + image regions
+      // (OCR provides better text grouping, font detection, and text/image separation)
       set({
         processingStatus: {
           stage: "ocr-processing",
@@ -451,54 +361,53 @@ async function loadPdfFile(
         },
       });
 
+      let textElements: TextElement[] = [];
+
       try {
         const ocrResult = await extractTextWithOcr(rendered.fullImageBase64);
+        textElements = ocrResult.textElements;
 
-        // Text: prefer text layer (more accurate), use OCR text as fallback
-        if (textElements.length === 0 && ocrResult.textElements.length > 0) {
-          textElements = ocrResult.textElements;
-        }
-
-        // Images: always extract OCR-detected visual regions
-        // (diagrams, charts, tables, network diagrams, logos, photos, etc.)
+        // Crop OCR-detected image regions (diagrams, charts, tables, etc.)
         if (ocrResult.imageRegions.length > 0) {
           try {
             const croppedImages = await cropImageRegions(rendered.fullImage, ocrResult.imageRegions);
             imageElements = [...imageElements, ...croppedImages];
-            console.log(`[Page ${i}] Cropped ${croppedImages.length} image regions from OCR`);
           } catch (cropErr) {
             console.warn(`[Page ${i}] Image region cropping failed:`, cropErr);
           }
         }
+
+        console.log(`[Page ${i}] OCR: ${textElements.length} texts, ${imageElements.length} images`);
       } catch (err) {
         const errMsg = err instanceof Error ? err.message : String(err);
         const isCircuitBreaker = err instanceof OcrRateLimitError;
         console.warn(`[Page ${i}] OCR failed${isCircuitBreaker ? " (circuit breaker)" : ""}:`, errMsg);
 
-        // Record OCR error once
+        // Record OCR error
         if (!ocrErrorMsg) {
           ocrErrorMsg = errMsg;
-          if (isCircuitBreaker) {
-            warnings.push("OCR 실패: API 한도 초과 - 텍스트 레이어로 대체합니다");
-          } else {
-            warnings.push(`OCR 실패: ${errMsg}`);
-          }
+          warnings.push(isCircuitBreaker
+            ? "OCR 실패: API 한도 초과"
+            : `OCR 실패: ${errMsg}`);
         }
 
-        // Text layer as fallback when OCR fails
-        if (textElements.length === 0 && textLayerElements.length > 0) {
-          textElements = textLayerElements;
+        // Fallback: text layer extraction when OCR fails
+        try {
+          const { hasText } = await tryExtractText(page);
+          if (hasText) {
+            const content = await page.getTextContent();
+            const viewport = page.getViewport({ scale: 1.0 });
+            textElements = buildTextLayerElements(content, viewport);
+            console.log(`[Page ${i}] Fallback text layer: ${textElements.length} elements`);
+          }
+        } catch (textErr) {
+          console.warn(`[Page ${i}] Text layer fallback also failed:`, textErr);
         }
       }
 
-      console.log(`[Page ${i}] Result: ${textElements.length} texts, ${imageElements.length} images`);
-
       // Report extraction failure for first page
       if (i === 1 && textElements.length === 0 && imageElements.length === 0) {
-        const reason = !hasText
-          ? "PDF에 텍스트 레이어가 없습니다 (스캔/이미지 PDF일 수 있음)"
-          : "텍스트 병합 후 결과가 비어있습니다";
-        warnings.push(`텍스트/이미지 추출 실패: ${reason}`);
+        warnings.push("텍스트/이미지 추출 실패");
         warnings.push("내보내기 시 페이지 이미지가 포함됩니다.");
       }
 
@@ -535,6 +444,73 @@ async function loadPdfFile(
     set({ processingStatus: { stage: "idle" } });
     throw error;
   }
+}
+
+// --- Text Layer Fallback (used only when OCR fails) ---
+function buildTextLayerElements(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  content: any,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  viewport: any
+): TextElement[] {
+  const rawItems: Array<{
+    text: string; x: number; y: number; width: number; height: number; fontSize: number;
+  }> = [];
+
+  for (const item of content.items) {
+    if (!("str" in item) || !item.str.trim()) continue;
+    const tx = item.transform[4];
+    const ty = item.transform[5];
+    const fontSizePt = Math.sqrt(item.transform[0] ** 2 + item.transform[1] ** 2);
+    const fontSizePct = (fontSizePt / viewport.height) * 100;
+
+    rawItems.push({
+      text: item.str.normalize("NFC"),
+      x: (tx / viewport.width) * 100,
+      y: ((viewport.height - ty) / viewport.height) * 100,
+      width: ((item.width || fontSizePt * item.str.length * 0.6) / viewport.width) * 100,
+      height: fontSizePct * 1.3,
+      fontSize: fontSizePct,
+    });
+  }
+
+  if (rawItems.length === 0) return [];
+
+  rawItems.sort((a, b) => a.y - b.y || a.x - b.x);
+  const merged: typeof rawItems = [];
+  let cur = { ...rawItems[0] };
+
+  for (let j = 1; j < rawItems.length; j++) {
+    const item = rawItems[j];
+    const yTol = Math.max(cur.height, item.height) * 0.7;
+    const xGap = item.x - (cur.x + cur.width);
+    if (Math.abs(item.y - cur.y) <= yTol && xGap < 3) {
+      cur.text += (xGap > 0.5 ? " " : "") + item.text;
+      cur.width = Math.max(cur.width, item.x + item.width - cur.x);
+      cur.height = Math.max(cur.height, item.height);
+      cur.fontSize = Math.max(cur.fontSize, item.fontSize);
+    } else {
+      merged.push(cur);
+      cur = { ...item };
+    }
+  }
+  merged.push(cur);
+
+  return merged.map((m) => ({
+    id: uuidv4(),
+    text: m.text,
+    textKo: "",
+    textJa: "",
+    x: Math.max(0, Math.min(100, m.x)),
+    y: Math.max(0, Math.min(100, m.y)),
+    width: Math.max(1, Math.min(100, m.width)),
+    height: Math.max(1, Math.min(100, m.height)),
+    fontSize: m.fontSize,
+    fontColor: "#000000",
+    fontWeight: "normal" as const,
+    textAlign: "left" as const,
+    isEdited: false,
+  }));
 }
 
 // --- DOCX Loading ---

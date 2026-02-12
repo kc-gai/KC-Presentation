@@ -1,46 +1,48 @@
 import { NextRequest, NextResponse } from "next/server";
 import { GoogleGenerativeAI } from "@google/generative-ai";
 
-const OCR_PROMPT = `You are a precise visual element extractor for presentation slides. Your goal is to identify and locate EVERY visual element on the slide so it can be reconstructed as an editable document.
+const OCR_PROMPT = `You are a precision layout extractor for presentation slides. Decompose the slide into SEPARATE text and visual elements so it can be perfectly reconstructed.
 
-## Text Elements
-For each text block found, return:
-- "text": exact text content (preserve line breaks, bullet points, numbering within a block)
-- "x": x position as percentage (0-100) from left edge of slide
-- "y": y position as percentage (0-100) from top edge of slide
-- "width": width as percentage (0-100) of the slide
-- "height": height as percentage (0-100) of the slide
-- "fontSize": font size as percentage of slide height (large title: 6-10, subtitle: 4-6, body: 2.5-4, small/footnote: 1.5-2.5)
+## CRITICAL SEPARATION RULES
+1. STANDALONE TEXT (titles, subtitles, body paragraphs, captions, standalone labels) → textElements
+2. VISUAL ELEMENTS (diagrams, charts, tables, logos, photos, shapes, arrows, colored boxes/banners) → imageRegions
+3. Text that is INSIDE or PART OF a visual element (chart labels, table cell text, diagram annotations, text on colored backgrounds/shapes) → belongs to the imageRegion, NOT textElements
+4. textElements and imageRegions must NEVER overlap. No text element should be inside any image region's bounding box.
 
-Rules for text:
-- Group text that belongs together (same heading, same paragraph, same bullet list) into ONE block
-- Keep bullet points and numbered items as one block with line breaks
-- Be extremely precise with bounding box positions - they must tightly fit the actual text
-- Table cell text should be included as text elements with precise cell positions
+## Text Elements (standalone text ONLY)
+For each standalone text block return:
+- "text": exact text (preserve \\n for line breaks, bullet chars •/-, numbering)
+- "x": left edge as % of slide width (0-100), precise to 0.5
+- "y": top edge as % of slide height (0-100), precise to 0.5
+- "width": as % of slide width
+- "height": as % of slide height
+- "fontSize": as % of slide height (large title: 6-10, subtitle: 4-6, body: 2.5-4, caption: 1.5-2.5)
+- "fontWeight": "bold" or "normal" (detect from visual character thickness)
+- "fontColor": hex color (e.g. "#000000", "#333333", "#3366CC", "#FFFFFF")
 
-## Image Regions
-Identify ALL non-text visual elements. Each region must be detected separately:
-- Diagrams (network, architecture, flow, sequence, ER diagrams)
-- Charts and graphs (bar, pie, line, scatter, etc.)
-- Tables (the table structure/grid itself, excluding text inside)
-- Logos and icons (company logos, product icons)
-- Photos and illustrations
-- Decorative shapes with visual content (colored boxes, banners with gradients)
-- Arrows and connectors between elements (if substantial)
+Rules:
+- Group related text into ONE block (heading, paragraph, bullet list)
+- Bounding box must TIGHTLY fit the actual text area
+- Accurately recognize English, Japanese (漢字ひらがなカタカナ), Korean (한글)
+- Detect bold from visual weight of characters
 
-For each visual region, return:
-- "x", "y", "width", "height": tight bounding box as percentages (0-100)
+## Image Regions (all visual elements)
+For each visual element return:
+- "x", "y", "width", "height": tight bounding box as % (0-100)
 
-Do NOT include as image regions:
-- Pure text with no visual decoration
-- The slide background color/gradient
-- Tiny dots or thin lines (under 2% of slide in both dimensions)
+Include as image regions:
+- Tables (entire table including headers, rows, and cell text)
+- Charts/graphs with their legends and labels
+- Diagrams with their annotations
+- Logos, photos, illustrations
+- Colored shapes, banners, decorative boxes (even with text on them)
+- Arrows, connectors (if visually significant)
 
 ## Output Format
-Return ONLY valid JSON (no markdown, no code blocks, no explanation):
-{"textElements":[{"text":"Title Text","x":5,"y":3,"width":90,"height":8,"fontSize":7.0}],"imageRegions":[{"x":55,"y":15,"width":40,"height":60}]}
+Return ONLY valid JSON (no markdown, no code blocks):
+{"textElements":[{"text":"Title","x":3,"y":2,"width":94,"height":7,"fontSize":7.5,"fontWeight":"bold","fontColor":"#000000"}],"imageRegions":[{"x":3,"y":15,"width":45,"height":65}]}
 
-IMPORTANT: Detect every visible element. Missing elements means the reconstructed slide will have gaps.`;
+IMPORTANT: Zero overlap between text and image regions. Every visible element must be captured.`;
 
 type OcrTextElement = {
   text: string;
@@ -49,6 +51,8 @@ type OcrTextElement = {
   width: number;
   height: number;
   fontSize: number;
+  fontWeight?: "bold" | "normal";
+  fontColor?: string;
 };
 
 type OcrImageRegion = {

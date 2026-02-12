@@ -22,7 +22,7 @@
   --color-card: var(--card);
   --color-danger: var(--danger);
   --color-success: var(--success);
-  --font-sans: var(--font-noto-kr), var(--font-noto-jp), 'Malgun Gothic', 'Yu Gothic', sans-serif;
+  --font-sans: 'Noto Sans KR', 'Noto Sans JP', 'Malgun Gothic', 'Yu Gothic', sans-serif;
 }
 
 body {
