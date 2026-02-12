@@ -158,7 +158,7 @@ export default function TextOverlay({
           ${isEditing ? "outline-none ring-2 ring-primary bg-white/90 rounded-sm p-0.5" : ""}
         `}
         style={{
-          fontSize: `${element.fontSize * 0.6}px`,
+          fontSize: `${element.fontSize}cqh`,
           color: element.fontColor,
           fontWeight: element.fontWeight,
           textAlign: element.textAlign,

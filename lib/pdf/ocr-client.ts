@@ -12,7 +12,23 @@ interface OcrResponse {
     height: number;
     fontSize: number;
   }>;
+  imageRegions?: Array<{
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+  }>;
   engine?: string; // "paddleocr" | "vertexai" | "gemini-free"
+}
+
+export interface OcrResult {
+  textElements: TextElement[];
+  imageRegions: Array<{
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+  }>;
 }
 
 /**
@@ -91,7 +107,7 @@ export function resetOcrCircuitBreaker() {
 
 export async function extractTextWithOcr(
   imageBase64: string
-): Promise<TextElement[]> {
+): Promise<OcrResult> {
   // Circuit breaker: if already tripped, skip immediately
   if (circuitBreakerTripped) {
     throw new OcrRateLimitError("OCR 호출 중단됨 (API 한도 초과로 남은 페이지 스킵)");
@@ -139,21 +155,24 @@ export async function extractTextWithOcr(
         lastEngine = data.engine;
         console.log(`[OCR] Engine: ${data.engine}`);
       }
-      return data.textElements.map((el) => ({
-        id: uuidv4(),
-        text: (el.text || "").normalize("NFC"),
-        textKo: "",
-        textJa: "",
-        x: el.x,
-        y: el.y,
-        width: el.width,
-        height: el.height,
-        fontSize: el.fontSize,
-        fontColor: "#000000",
-        fontWeight: "normal" as const,
-        textAlign: "left" as const,
-        isEdited: false,
-      }));
+      return {
+        textElements: data.textElements.map((el) => ({
+          id: uuidv4(),
+          text: (el.text || "").normalize("NFC"),
+          textKo: "",
+          textJa: "",
+          x: el.x,
+          y: el.y,
+          width: el.width,
+          height: el.height,
+          fontSize: el.fontSize,
+          fontColor: "#000000",
+          fontWeight: "normal" as const,
+          textAlign: "left" as const,
+          isEdited: false,
+        })),
+        imageRegions: data.imageRegions || [],
+      };
     }
 
     const errorBody = await response.json().catch(() => null);

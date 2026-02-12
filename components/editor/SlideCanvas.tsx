@@ -41,11 +41,12 @@ export default function SlideCanvas({
         data-slide-canvas
         className="relative bg-white shadow-lg rounded-lg overflow-hidden"
         style={{
+          containerType: "size",
           aspectRatio: `${aspectRatio}`,
           maxWidth: "100%",
           maxHeight: "100%",
           width: "100%",
-        }}
+        } as React.CSSProperties}
         onClick={handleCanvasClick}
       >
         {/* Background image - shown as faint reference when elements are extracted */}
@@ -54,7 +55,7 @@ export default function SlideCanvas({
           alt={`Slide ${slide.pageIndex + 1}`}
           fill
           className={`object-contain pointer-events-none ${
-            hasExtractedElements ? "opacity-10" : "opacity-100"
+            hasExtractedElements ? "opacity-30" : "opacity-100"
           }`}
           unoptimized
           priority

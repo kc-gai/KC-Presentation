@@ -302,6 +302,7 @@ async function loadPdfFile(
     const { renderPageToImage, tryExtractText } = await import("@/lib/pdf/pdf-renderer");
     const { extractImagesFromPage } = await import("@/lib/pdf/image-extractor");
     const { extractTextWithOcr, resetOcrCircuitBreaker, OcrRateLimitError } = await import("@/lib/pdf/ocr-client");
+    const { cropImageRegions } = await import("@/lib/pdf/image-cropper");
 
     // Reset circuit breaker for new document
     resetOcrCircuitBreaker();
@@ -376,17 +377,18 @@ async function loadPdfFile(
 
           const tx = item.transform[4];
           const ty = item.transform[5];
-          const fontSize = Math.sqrt(
+          const fontSizePt = Math.sqrt(
             item.transform[0] ** 2 + item.transform[1] ** 2
           );
+          const fontSizePct = (fontSizePt / viewport.height) * 100;
 
           rawItems.push({
             text: item.str.normalize("NFC"),
             x: (tx / viewport.width) * 100,
             y: ((viewport.height - ty) / viewport.height) * 100,
-            width: ((item.width || fontSize * item.str.length * 0.6) / viewport.width) * 100,
-            height: ((fontSize * 1.3) / viewport.height) * 100,
-            fontSize: Math.round(fontSize),
+            width: ((item.width || fontSizePt * item.str.length * 0.6) / viewport.width) * 100,
+            height: fontSizePct * 1.3,
+            fontSize: fontSizePct,
           });
         }
 
@@ -456,11 +458,21 @@ async function loadPdfFile(
         });
 
         try {
-          const ocrElements = await extractTextWithOcr(rendered.fullImageBase64);
-          if (ocrElements.length > 0) {
-            textElements = ocrElements;
+          const ocrResult = await extractTextWithOcr(rendered.fullImageBase64);
+          if (ocrResult.textElements.length > 0) {
+            textElements = ocrResult.textElements;
           } else if (textLayerElements.length > 0) {
             textElements = textLayerElements;
+          }
+          // Crop OCR-detected image regions (diagrams, charts, etc.)
+          if (ocrResult.imageRegions.length > 0 && imageElements.length === 0) {
+            try {
+              const croppedImages = await cropImageRegions(rendered.fullImage, ocrResult.imageRegions);
+              imageElements = croppedImages;
+              console.log(`[Page ${i}] Cropped ${croppedImages.length} image regions from OCR`);
+            } catch (cropErr) {
+              console.warn(`[Page ${i}] Image region cropping failed:`, cropErr);
+            }
           }
         } catch (err) {
           const errMsg = err instanceof Error ? err.message : String(err);

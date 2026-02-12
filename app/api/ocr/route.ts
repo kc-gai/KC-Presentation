@@ -1,21 +1,31 @@
 import { NextRequest, NextResponse } from "next/server";
 import { GoogleGenerativeAI } from "@google/generative-ai";
 
-const OCR_PROMPT = `You are an OCR engine that extracts text from presentation slide images.
-For each text block you find in the image, return a JSON object with:
-- "text": the exact text content (preserve line breaks within a block)
+const OCR_PROMPT = `You are an OCR engine that extracts text and identifies visual elements from presentation slide images.
+
+## Text Elements
+For each text block you find, return:
+- "text": exact text content (preserve line breaks within a block)
 - "x": x position as percentage (0-100) from left edge
 - "y": y position as percentage (0-100) from top edge
 - "width": width as percentage (0-100) of the slide
 - "height": height as percentage (0-100) of the slide
-- "fontSize": estimated font size in pixels (rough estimate based on text size relative to slide)
+- "fontSize": font size as percentage of the slide height (a large title is typically 6-10, body text 3-5, small text 1.5-2.5)
 
-Return ONLY a valid JSON array of these objects. No markdown, no explanation, no code blocks.
 Group text that belongs together (same paragraph/heading) into one block.
-Be very precise with position estimates - look at where each text block starts and its size relative to the full slide.
+Be very precise with position estimates.
 
-Example output:
-[{"text":"Title Text","x":5,"y":3,"width":90,"height":8,"fontSize":36},{"text":"Bullet point one\\nBullet point two","x":5,"y":20,"width":45,"height":15,"fontSize":18}]`;
+## Image Regions
+Identify significant non-text visual elements: diagrams, charts, logos, illustrations, photos, graphs, network diagrams, architecture diagrams, or any visual graphic area.
+For each, return:
+- "x", "y", "width", "height": bounding box as percentages (0-100)
+Do NOT include: full-slide backgrounds, tiny decorative elements, or elements smaller than 3% of the slide.
+
+## Output Format
+Return ONLY a valid JSON object (no markdown, no code blocks, no explanation):
+{"textElements":[{"text":"Title","x":5,"y":3,"width":90,"height":8,"fontSize":7.0}],"imageRegions":[{"x":55,"y":15,"width":40,"height":60}]}
+
+If no image regions found, return empty imageRegions array.`;
 
 type OcrTextElement = {
   text: string;
@@ -26,10 +36,22 @@ type OcrTextElement = {
   fontSize: number;
 };
 
+type OcrImageRegion = {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+};
+
+interface OcrResult {
+  textElements: OcrTextElement[];
+  imageRegions: OcrImageRegion[];
+}
+
 // ============================================================
 // Engine 1: PaddleOCR (local, free, unlimited)
 // ============================================================
-async function tryPaddleOcr(imageBase64: string): Promise<OcrTextElement[] | null> {
+async function tryPaddleOcr(imageBase64: string): Promise<OcrResult | null> {
   const PADDLE_URL = process.env.PADDLE_OCR_URL || "http://localhost:8765";
 
   try {
@@ -55,7 +77,7 @@ async function tryPaddleOcr(imageBase64: string): Promise<OcrTextElement[] | nul
   }
 
   const data = await response.json();
-  return data.textElements || [];
+  return { textElements: data.textElements || [], imageRegions: [] };
 }
 
 // ============================================================
@@ -77,11 +99,10 @@ function getVertexAuthOptions() {
   return undefined;
 }
 
-async function tryVertexAi(imageBase64: string): Promise<OcrTextElement[] | null> {
+async function tryVertexAi(imageBase64: string): Promise<OcrResult | null> {
   const projectId = process.env.VERTEX_PROJECT_ID || "gemini-vertex-470601";
   const location = process.env.VERTEX_LOCATION || "us-central1";
 
-  // Skip if no credentials available and not local
   const authOptions = getVertexAuthOptions();
 
   try {
@@ -132,7 +153,7 @@ async function tryVertexAi(imageBase64: string): Promise<OcrTextElement[] | null
 // ============================================================
 // Engine 3: Gemini Free API (rate-limited fallback)
 // ============================================================
-async function tryGeminiFree(imageBase64: string): Promise<OcrTextElement[]> {
+async function tryGeminiFree(imageBase64: string): Promise<OcrResult> {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) {
     throw new Error("GEMINI_API_KEY가 설정되지 않았습니다.");
@@ -152,24 +173,44 @@ async function tryGeminiFree(imageBase64: string): Promise<OcrTextElement[]> {
   ]);
 
   const responseText = result.response.text();
-  return parseGeminiResponse(responseText) || [];
+  return parseGeminiResponse(responseText) || { textElements: [], imageRegions: [] };
 }
 
 // ============================================================
 // Shared: Parse Gemini/Vertex AI JSON response
 // ============================================================
-function parseGeminiResponse(responseText: string): OcrTextElement[] | null {
+function parseGeminiResponse(responseText: string): OcrResult | null {
   let jsonStr = responseText.trim();
   if (jsonStr.startsWith("```")) {
     jsonStr = jsonStr.replace(/^```(?:json)?\n?/, "").replace(/\n?```$/, "");
   }
 
   try {
-    const elements: OcrTextElement[] = JSON.parse(jsonStr);
-    return elements.map((el) => ({
-      ...el,
-      text: (el.text || "").normalize("NFC"),
-    }));
+    const parsed = JSON.parse(jsonStr);
+
+    // New object format: {textElements: [...], imageRegions: [...]}
+    if (parsed.textElements) {
+      return {
+        textElements: (parsed.textElements as OcrTextElement[]).map((el) => ({
+          ...el,
+          text: (el.text || "").normalize("NFC"),
+        })),
+        imageRegions: (parsed.imageRegions as OcrImageRegion[]) || [],
+      };
+    }
+
+    // Legacy array format: [...]
+    if (Array.isArray(parsed)) {
+      return {
+        textElements: (parsed as OcrTextElement[]).map((el) => ({
+          ...el,
+          text: (el.text || "").normalize("NFC"),
+        })),
+        imageRegions: [],
+      };
+    }
+
+    return null;
   } catch {
     console.error("[OCR] Failed to parse response:", jsonStr.slice(0, 200));
     return null;
@@ -186,9 +227,9 @@ export async function POST(request: NextRequest) {
     // 1) PaddleOCR (local, free, unlimited)
     const paddleResult = await tryPaddleOcr(image);
     if (paddleResult !== null) {
-      console.log(`[OCR] PaddleOCR: ${paddleResult.length} elements`);
+      console.log(`[OCR] PaddleOCR: ${paddleResult.textElements.length} texts, ${paddleResult.imageRegions.length} images`);
       return NextResponse.json(
-        { textElements: paddleResult, engine: "paddleocr" },
+        { textElements: paddleResult.textElements, imageRegions: paddleResult.imageRegions, engine: "paddleocr" },
         { headers: { "Content-Type": "application/json; charset=utf-8" } }
       );
     }
@@ -196,18 +237,18 @@ export async function POST(request: NextRequest) {
     // 2) Vertex AI Gemini (Google Cloud, high limits)
     const vertexResult = await tryVertexAi(image);
     if (vertexResult !== null) {
-      console.log(`[OCR] Vertex AI: ${vertexResult.length} elements`);
+      console.log(`[OCR] Vertex AI: ${vertexResult.textElements.length} texts, ${vertexResult.imageRegions.length} images`);
       return NextResponse.json(
-        { textElements: vertexResult, engine: "vertexai" },
+        { textElements: vertexResult.textElements, imageRegions: vertexResult.imageRegions, engine: "vertexai" },
         { headers: { "Content-Type": "application/json; charset=utf-8" } }
       );
     }
 
     // 3) Gemini Free API (rate-limited fallback)
     const geminiResult = await tryGeminiFree(image);
-    console.log(`[OCR] Gemini Free: ${geminiResult.length} elements`);
+    console.log(`[OCR] Gemini Free: ${geminiResult.textElements.length} texts, ${geminiResult.imageRegions.length} images`);
     return NextResponse.json(
-      { textElements: geminiResult, engine: "gemini-free" },
+      { textElements: geminiResult.textElements, imageRegions: geminiResult.imageRegions, engine: "gemini-free" },
       { headers: { "Content-Type": "application/json; charset=utf-8" } }
     );
   } catch (error) {
