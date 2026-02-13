@@ -108,15 +108,17 @@ export async function generateDocx(
 
         const detectedLang = detectLanguage(text);
         const fontFace = getFontForLanguage(detectedLang);
-        const fontSize = elem.textEl.fontSize;
 
-        // Determine heading level based on font size
+        // fontSize is stored as % of slide height → convert to pt
+        const fontSizePt = Math.max(8, Math.round((elem.textEl.fontSize / 100) * slide.height));
+
+        // Determine heading level based on font size in pt
         let heading: (typeof HeadingLevel)[keyof typeof HeadingLevel] | undefined;
-        if (fontSize >= 28) {
+        if (fontSizePt >= 28) {
           heading = HeadingLevel.HEADING_1;
-        } else if (fontSize >= 22) {
+        } else if (fontSizePt >= 22) {
           heading = HeadingLevel.HEADING_2;
-        } else if (fontSize >= 18) {
+        } else if (fontSizePt >= 18) {
           heading = HeadingLevel.HEADING_3;
         }
 
@@ -132,7 +134,7 @@ export async function generateDocx(
             new TextRun({
               text: lines[i],
               font: fontFace,
-              size: Math.round(fontSize * 1.5), // half-points
+              size: fontSizePt * 2, // convert pt to half-points for docx library
               bold: elem.textEl.fontWeight === "bold",
               color: elem.textEl.fontColor.replace("#", ""),
             })

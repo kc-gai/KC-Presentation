@@ -78,6 +78,19 @@ export async function extractImagesFromPage(
   const transformStack: number[][] = [];
   let currentTransform = [1, 0, 0, 1, 0, 0]; // identity
 
+  // Helper: multiply two 2D affine matrices [a,b,c,d,e,f]
+  function multiplyTransform(cur: number[], [a, b, c, d, e, f]: number[]): number[] {
+    const [ca, cb, cc, cd, ce, cf] = cur;
+    return [
+      ca * a + cc * b,
+      cb * a + cd * b,
+      ca * c + cc * d,
+      cb * c + cd * d,
+      ca * e + cc * f + ce,
+      cb * e + cd * f + cf,
+    ];
+  }
+
   for (let i = 0; i < opList.fnArray.length; i++) {
     const fn = opList.fnArray[i];
     const args = opList.argsArray[i];
@@ -87,17 +100,8 @@ export async function extractImagesFromPage(
     } else if (fn === OPS.restore) {
       currentTransform = transformStack.pop() || [1, 0, 0, 1, 0, 0];
     } else if (fn === OPS.transform) {
-      // Multiply current transform by new transform
-      const [a, b, c, d, e, f] = args as number[];
-      const [ca, cb, cc, cd, ce, cf] = currentTransform;
-      currentTransform = [
-        ca * a + cc * b,
-        cb * a + cd * b,
-        ca * c + cc * d,
-        cb * c + cd * d,
-        ca * e + cc * f + ce,
-        cb * e + cd * f + cf,
-      ];
+      // Concatenate new transform onto current (PDF `cm` operator)
+      currentTransform = multiplyTransform(currentTransform, args as number[]);
     } else if (
       fn === OPS.paintImageXObject ||
       fn === OPS.paintImageXObjectRepeat
@@ -116,16 +120,30 @@ export async function extractImagesFromPage(
         // Skip very small images (likely decorative/icons less than 10x10)
         if (imgData.width < 10 || imgData.height < 10) continue;
 
-        // Get position from current transform matrix
-        // Transform: [scaleX, skewY, skewX, scaleY, translateX, translateY]
-        const [scaleX, , , scaleY, tx, ty] = currentTransform;
+        // Compute axis-aligned bounding box from transform matrix
+        // The image unit square [0,0]-[1,1] is mapped through the transform
+        // Transform: [a, b, c, d, e, f] maps (x,y) → (a*x+c*y+e, b*x+d*y+f)
+        const [a, b, c, d, e, f] = currentTransform;
 
-        const imgWidthPt = Math.abs(scaleX);
-        const imgHeightPt = Math.abs(scaleY);
+        // Four corners of unit square in page space
+        const corners = [
+          { px: e, py: f },                   // (0,0)
+          { px: a + e, py: b + f },            // (1,0)
+          { px: c + e, py: d + f },            // (0,1)
+          { px: a + c + e, py: b + d + f },    // (1,1)
+        ];
 
-        // Convert to percentage of page
-        const x = (tx / viewport.width) * 100;
-        const y = ((viewport.height - ty - imgHeightPt) / viewport.height) * 100;
+        const minX = Math.min(...corners.map((p) => p.px));
+        const maxX = Math.max(...corners.map((p) => p.px));
+        const minY = Math.min(...corners.map((p) => p.py));
+        const maxY = Math.max(...corners.map((p) => p.py));
+
+        const imgWidthPt = maxX - minX;
+        const imgHeightPt = maxY - minY;
+
+        // Convert to percentage of page (PDF y-axis is bottom-up)
+        const x = (minX / viewport.width) * 100;
+        const y = ((viewport.height - maxY) / viewport.height) * 100;
         const width = (imgWidthPt / viewport.width) * 100;
         const height = (imgHeightPt / viewport.height) * 100;
 

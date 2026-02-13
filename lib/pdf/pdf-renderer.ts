@@ -56,12 +56,8 @@ export async function renderPageToImage(
   scale: number = 2.0
 ): Promise<RenderedPage> {
   const viewport = page.getViewport({ scale });
-  const thumbViewport = page.getViewport({ scale: 0.3 });
-  // OCR doesn't need full resolution - use low scale to keep base64 well under API limit
-  const ocrScale = Math.min(scale, 0.5);
-  const ocrViewport = page.getViewport({ scale: ocrScale });
 
-  // Render full resolution (for display)
+  // 1) Full resolution render (for display + background export)
   const canvas = document.createElement("canvas");
   canvas.width = viewport.width;
   canvas.height = viewport.height;
@@ -78,7 +74,10 @@ export async function renderPageToImage(
   );
   const fullImage = URL.createObjectURL(fullBlob);
 
-  // Render separate smaller canvas for OCR base64
+  // 2) OCR render: direct PDF.js render at lower scale for sharp text
+  //    (canvas resize blurs text, hurting OCR accuracy)
+  const ocrScale = Math.min(scale, 0.5);
+  const ocrViewport = page.getViewport({ scale: ocrScale });
   const ocrCanvas = document.createElement("canvas");
   ocrCanvas.width = ocrViewport.width;
   ocrCanvas.height = ocrViewport.height;
@@ -90,27 +89,17 @@ export async function renderPageToImage(
     viewport: ocrViewport,
   }).promise;
 
-  // Compress OCR canvas to stay well under API limit
   const fullImageBase64 = compressCanvasToBase64(ocrCanvas);
 
-  // Render thumbnail
-  const thumbCanvas = document.createElement("canvas");
-  thumbCanvas.width = thumbViewport.width;
-  thumbCanvas.height = thumbViewport.height;
-  const thumbCtx = thumbCanvas.getContext("2d")!;
-
-  await page.render({
-    canvas: thumbCanvas,
-    canvasContext: thumbCtx,
-    viewport: thumbViewport,
-  }).promise;
-
+  // 3) Thumbnail: resize from full canvas (no separate render needed)
+  const thumbRatio = 0.3 / scale;
+  const thumbCanvas = resizeCanvas(canvas, thumbRatio);
   const thumbBlob = await new Promise<Blob>((resolve) =>
     thumbCanvas.toBlob((b) => resolve(b!), "image/png")
   );
   const thumbnail = URL.createObjectURL(thumbBlob);
 
-  // Generate higher-quality JPEG for export fallback (from the full-res canvas)
+  // 4) Higher-quality JPEG for export fallback
   const backgroundBase64 = canvas.toDataURL("image/jpeg", 0.85).split(",")[1];
 
   const origViewport = page.getViewport({ scale: 1.0 });

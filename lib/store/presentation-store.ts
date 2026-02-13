@@ -10,6 +10,58 @@ import type {
   OutputFormat,
 } from "@/types/presentation";
 
+/** Revoke all Blob URLs held by a presentation to prevent memory leaks */
+function revokePresentationBlobUrls(presentation: Presentation | null) {
+  if (!presentation) return;
+  for (const slide of presentation.slides) {
+    if (slide.backgroundImage) URL.revokeObjectURL(slide.backgroundImage);
+    if (slide.thumbnailImage) URL.revokeObjectURL(slide.thumbnailImage);
+    for (const img of slide.imageElements) {
+      if (img.imageUrl) URL.revokeObjectURL(img.imageUrl);
+    }
+  }
+}
+
+/** Check if two bounding boxes (in % coordinates) overlap significantly (>50% IoU) */
+function hasSignificantOverlap(
+  a: { x: number; y: number; width: number; height: number },
+  b: { x: number; y: number; width: number; height: number },
+): boolean {
+  const ax2 = a.x + a.width;
+  const ay2 = a.y + a.height;
+  const bx2 = b.x + b.width;
+  const by2 = b.y + b.height;
+
+  const ix1 = Math.max(a.x, b.x);
+  const iy1 = Math.max(a.y, b.y);
+  const ix2 = Math.min(ax2, bx2);
+  const iy2 = Math.min(ay2, by2);
+
+  if (ix2 <= ix1 || iy2 <= iy1) return false;
+
+  const intersection = (ix2 - ix1) * (iy2 - iy1);
+  const areaA = a.width * a.height;
+  const areaB = b.width * b.height;
+  const minArea = Math.min(areaA, areaB);
+
+  // Overlap > 50% of the smaller region
+  return minArea > 0 && intersection / minArea > 0.5;
+}
+
+/** Remove OCR-cropped images that overlap with PDF-embedded images */
+function deduplicateImages(
+  pdfImages: ImageElement[],
+  ocrCroppedImages: ImageElement[],
+): ImageElement[] {
+  if (pdfImages.length === 0) return ocrCroppedImages;
+
+  const deduplicated = ocrCroppedImages.filter((ocrImg) =>
+    !pdfImages.some((pdfImg) => hasSignificantOverlap(ocrImg, pdfImg))
+  );
+
+  return deduplicated;
+}
+
 interface PresentationStore {
   presentation: Presentation | null;
   processingStatus: ProcessingStatus;
@@ -54,6 +106,9 @@ export const usePresentationStore = create<PresentationStore>((set, get) => ({
   translationStatus: { stage: "idle" },
 
   loadFile: async (file: File, outputFormat: OutputFormat) => {
+    // Revoke old Blob URLs before loading new file
+    revokePresentationBlobUrls(get().presentation);
+
     const ext = file.name.toLowerCase();
 
     if (ext.endsWith(".pdf")) {
@@ -279,6 +334,7 @@ export const usePresentationStore = create<PresentationStore>((set, get) => ({
   },
 
   reset: () => {
+    revokePresentationBlobUrls(get().presentation);
     set({
       presentation: null,
       processingStatus: { stage: "idle" },
@@ -368,10 +424,12 @@ async function loadPdfFile(
         textElements = ocrResult.textElements;
 
         // Crop OCR-detected image regions (diagrams, charts, tables, etc.)
+        // Then deduplicate against PDF-embedded images to avoid showing same image twice
         if (ocrResult.imageRegions.length > 0) {
           try {
             const croppedImages = await cropImageRegions(rendered.fullImage, ocrResult.imageRegions);
-            imageElements = [...imageElements, ...croppedImages];
+            const uniqueCroppedImages = deduplicateImages(imageElements, croppedImages);
+            imageElements = [...imageElements, ...uniqueCroppedImages];
           } catch (cropErr) {
             console.warn(`[Page ${i}] Image region cropping failed:`, cropErr);
           }

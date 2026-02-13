@@ -69,10 +69,19 @@ export async function generatePptx(
   for (const slideData of slides) {
     const pptSlide = pptx.addSlide();
 
-    // White background (no full-page image background)
-    pptSlide.background = { fill: "FFFFFF" };
+    // Always use background image to preserve background colors, decorative elements, watermarks
+    if (slideData.backgroundImageBase64) {
+      pptSlide.background = { data: `image/jpeg;base64,${slideData.backgroundImageBase64}` };
+    } else if (slideData.backgroundImage) {
+      const bgImg = await fetchImageAsBase64(slideData.backgroundImage);
+      if (bgImg) {
+        pptSlide.background = { data: `image/png;base64,${bgImg}` };
+      }
+    } else {
+      pptSlide.background = { fill: "FFFFFF" };
+    }
 
-    // Add individual image elements
+    // Add individual image elements on top of background
     for (const imgElement of slideData.imageElements) {
       const xInches = (imgElement.x / 100) * layoutW;
       const yInches = (imgElement.y / 100) * layoutH;
@@ -88,19 +97,8 @@ export async function generatePptx(
       });
     }
 
-    // If no individual images were extracted, fall back to background image
-    if (slideData.imageElements.length === 0) {
-      if (slideData.backgroundImageBase64) {
-        pptSlide.background = { data: `image/jpeg;base64,${slideData.backgroundImageBase64}` };
-      } else if (slideData.backgroundImage) {
-        const bgImg = await fetchImageAsBase64(slideData.backgroundImage);
-        if (bgImg) {
-          pptSlide.background = { data: `image/png;base64,${bgImg}` };
-        }
-      }
-    }
-
     // Add text elements
+    // fontSize is stored as % of slide height → convert to pt using slideData.height
     for (const element of slideData.textElements) {
       const text = getTextForLanguage(element, language);
       if (!text.trim()) continue;
@@ -113,12 +111,15 @@ export async function generatePptx(
       const wInches = (element.width / 100) * layoutW;
       const hInches = (element.height / 100) * layoutH;
 
+      // Convert fontSize from % of slide height to pt
+      const fontSizePt = Math.max(8, Math.round((element.fontSize / 100) * slideData.height));
+
       pptSlide.addText(text, {
         x: xInches,
         y: yInches,
         w: wInches,
         h: hInches,
-        fontSize: Math.round(element.fontSize * 0.75),
+        fontSize: fontSizePt,
         fontFace,
         color: element.fontColor.replace("#", ""),
         bold: element.fontWeight === "bold",

@@ -82,8 +82,9 @@ export async function loadDocx(
 
     for (const node of section.elements) {
       if (node.type === "heading") {
-        const fontSize = node.level === 1 ? 32 : node.level === 2 ? 24 : 20;
-        const height = (fontSize * 1.5 / slideHeight) * 100;
+        const fontSizePt = node.level === 1 ? 32 : node.level === 2 ? 24 : 20;
+        const fontSize = (fontSizePt / slideHeight) * 100; // convert pt to % of slide height
+        const height = fontSize * 1.3;
 
         textElements.push({
           id: uuidv4(),
@@ -105,9 +106,10 @@ export async function loadDocx(
       } else if (node.type === "paragraph") {
         if (!node.text.trim()) continue;
 
-        const fontSize = 16;
+        const fontSizePt = 16;
+        const fontSize = (fontSizePt / slideHeight) * 100; // convert pt to % of slide height
         const lineCount = Math.ceil(node.text.length / 60);
-        const height = Math.max((fontSize * 1.5 * lineCount / slideHeight) * 100, 4);
+        const height = Math.max(fontSize * 1.3 * lineCount, 4);
 
         textElements.push({
           id: uuidv4(),
@@ -127,10 +129,11 @@ export async function loadDocx(
 
         currentY += height + 1;
       } else if (node.type === "list") {
-        const fontSize = 16;
+        const fontSizePt = 16;
+        const fontSize = (fontSizePt / slideHeight) * 100; // convert pt to % of slide height
         const text = node.items.join("\n");
         const lineCount = node.items.length;
-        const height = Math.max((fontSize * 1.5 * lineCount / slideHeight) * 100, 4);
+        const height = Math.max(fontSize * 1.3 * lineCount, 4);
 
         textElements.push({
           id: uuidv4(),

@@ -198,12 +198,42 @@ async function tryGeminiFree(imageBase64: string): Promise<OcrResult> {
 // ============================================================
 // Shared: Parse Gemini/Vertex AI JSON response
 // ============================================================
+function extractJsonFromText(text: string): string | null {
+  // Try to find JSON object starting with { and ending with }
+  const objectMatch = text.match(/\{[\s\S]*"textElements"[\s\S]*\}/);
+  if (objectMatch) return objectMatch[0];
+
+  // Try to find JSON array starting with [ and ending with ]
+  const arrayMatch = text.match(/\[[\s\S]*\]/);
+  if (arrayMatch) return arrayMatch[0];
+
+  return null;
+}
+
 function parseGeminiResponse(responseText: string): OcrResult | null {
   let jsonStr = responseText.trim();
+
+  // Strip markdown code block wrapper
   if (jsonStr.startsWith("```")) {
     jsonStr = jsonStr.replace(/^```(?:json)?\n?/, "").replace(/\n?```$/, "");
   }
 
+  // Attempt 1: Direct JSON parse
+  const result = tryParseOcrJson(jsonStr);
+  if (result) return result;
+
+  // Attempt 2: Extract JSON from surrounding text (e.g. "Here is the result: {...}")
+  const extracted = extractJsonFromText(responseText);
+  if (extracted) {
+    const extractedResult = tryParseOcrJson(extracted);
+    if (extractedResult) return extractedResult;
+  }
+
+  console.error("[OCR] Failed to parse response:", responseText.slice(0, 300));
+  return null;
+}
+
+function tryParseOcrJson(jsonStr: string): OcrResult | null {
   try {
     const parsed = JSON.parse(jsonStr);
 
@@ -231,7 +261,6 @@ function parseGeminiResponse(responseText: string): OcrResult | null {
 
     return null;
   } catch {
-    console.error("[OCR] Failed to parse response:", jsonStr.slice(0, 200));
     return null;
   }
 }
