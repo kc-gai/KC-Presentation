@@ -69,15 +69,29 @@ export async function generatePptx(
   for (const slideData of slides) {
     const pptSlide = pptx.addSlide();
 
-    // Always use background image to preserve background colors, decorative elements, watermarks
-    if (slideData.backgroundImageBase64) {
+    // Background priority: analyzed color > high-res image > original > white
+    if (slideData.backgroundColor && slideData.backgroundColor.type === "solid") {
+      // Solid color background
+      pptSlide.background = { fill: slideData.backgroundColor.color!.replace("#", "") };
+    } else if (slideData.backgroundColor && slideData.backgroundColor.type === "gradient") {
+      // Gradient background: pptxgenjs doesn't support gradient background directly
+      // Use a rectangle shape to simulate gradient (approximation with solid color)
+      // For better results, we use the "from" color as the background
+      pptSlide.background = { fill: slideData.backgroundColor.gradientFrom!.replace("#", "") };
+    } else if (slideData.highResBackgroundBase64) {
+      // Image background: high-resolution
+      pptSlide.background = { data: `image/jpeg;base64,${slideData.highResBackgroundBase64}` };
+    } else if (slideData.backgroundImageBase64) {
+      // Image background: original quality
       pptSlide.background = { data: `image/jpeg;base64,${slideData.backgroundImageBase64}` };
     } else if (slideData.backgroundImage) {
+      // Fallback: fetch blob URL as base64
       const bgImg = await fetchImageAsBase64(slideData.backgroundImage);
       if (bgImg) {
         pptSlide.background = { data: `image/png;base64,${bgImg}` };
       }
     } else {
+      // Default: white background
       pptSlide.background = { fill: "FFFFFF" };
     }
 

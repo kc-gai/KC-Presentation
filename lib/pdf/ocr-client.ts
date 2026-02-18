@@ -142,7 +142,8 @@ export async function extractTextWithOcr(
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     lastOcrCallTime = Date.now();
 
-    const response = await fetch("/api/ocr", {
+    const basePath = process.env.NEXT_PUBLIC_BASE_PATH || "/presentation";
+    const response = await fetch(`${basePath}/api/ocr`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json; charset=utf-8",

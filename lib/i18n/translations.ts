@@ -116,10 +116,30 @@ export const translations = {
     ja: "画像抽出中",
     en: "Extracting images",
   },
-  "status.ocrProcessing": {
-    ko: "텍스트 추출 중",
-    ja: "テキスト抽出中",
-    en: "Extracting text",
+  "status.analyzing": {
+    ko: "슬라이드 분석 중",
+    ja: "スライド分析中",
+    en: "Analyzing slides",
+  },
+  "status.analyzingHint": {
+    ko: "Gemini AI가 슬라이드 구조를 분석하고 있습니다.",
+    ja: "Gemini AIがスライド構造を分析しています。",
+    en: "Gemini AI is analyzing the slide structure.",
+  },
+  "status.highres": {
+    ko: "고해상도 렌더링 중...",
+    ja: "高解像度レンダリング中...",
+    en: "High-res rendering...",
+  },
+  "status.generatingDsl": {
+    ko: "프레젠테이션 생성 중",
+    ja: "プレゼンテーション生成中",
+    en: "Generating presentation",
+  },
+  "status.qaRepair": {
+    ko: "품질 검증 중",
+    ja: "品質検証中",
+    en: "Quality check",
   },
 
   // Toolbar
@@ -238,18 +258,6 @@ export const translations = {
     ko: "다른 파일 번역",
     ja: "別のファイルを翻訳",
     en: "Translate another file",
-  },
-
-  // OCR processing hint
-  "status.ocrHint": {
-    ko: "OCR 엔진이 Gemini에 연동되어 있습니다. Claude 등 고성능 AI 연동 시 더 빠른 추출이 가능합니다.",
-    ja: "OCRエンジンはGeminiに連動しています。Claude等の高性能AI連動でより高速な抽出が可能です。",
-    en: "OCR engine is connected to Gemini. Faster extraction is possible with Claude or other high-performance AI.",
-  },
-  "status.recommendPdf": {
-    ko: "발표자료는 Google NotebookLM에서 작성된 슬라이드 PDF를 권장합니다.",
-    ja: "発表資料はGoogle NotebookLMで作成されたスライドPDFを推奨します。",
-    en: "For presentations, slide PDFs created in Google NotebookLM are recommended.",
   },
 
   // Canvas

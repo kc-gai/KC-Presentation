@@ -5,7 +5,8 @@ let initialized = false;
 
 function initWorker() {
   if (initialized) return;
-  pdfjsLib.GlobalWorkerOptions.workerSrc = "/pdf.worker.min.mjs";
+  const basePath = process.env.NEXT_PUBLIC_BASE_PATH || "/presentation";
+  pdfjsLib.GlobalWorkerOptions.workerSrc = `${basePath}/pdf.worker.min.mjs`;
   initialized = true;
 }
 

@@ -128,3 +128,45 @@ export async function tryExtractText(
     text: allText,
   };
 }
+
+/**
+ * Render a PDF page at high resolution (4x scale) for export quality.
+ * Returns only base64 (no blob URL needed, only used for PPTX export).
+ */
+export async function renderPageHighRes(
+  page: PDFPageProxy,
+  scale: number = 4.0
+): Promise<{ highResBase64: string }> {
+  const viewport = page.getViewport({ scale });
+
+  // Limit canvas size to avoid GPU/memory issues (max 4096px in either dimension)
+  let effectiveScale = scale;
+  const maxDim = 4096;
+  if (viewport.width > maxDim || viewport.height > maxDim) {
+    const ratio = maxDim / Math.max(viewport.width, viewport.height);
+    effectiveScale = scale * ratio;
+  }
+
+  const effectiveViewport = page.getViewport({ scale: effectiveScale });
+
+  const canvas = document.createElement("canvas");
+  canvas.width = effectiveViewport.width;
+  canvas.height = effectiveViewport.height;
+  const ctx = canvas.getContext("2d")!;
+
+  await page.render({
+    canvas,
+    canvasContext: ctx,
+    viewport: effectiveViewport,
+  }).promise;
+
+  // Use high quality JPEG (0.90) for export
+  const highResBase64 = canvas.toDataURL("image/jpeg", 0.90).split(",")[1];
+
+  console.log(
+    `[HighRes] Rendered at ${effectiveScale}x: ${effectiveViewport.width}x${effectiveViewport.height}, ` +
+    `${(highResBase64.length / 1024 / 1024).toFixed(1)}MB`
+  );
+
+  return { highResBase64 };
+}

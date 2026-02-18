@@ -1,3 +1,5 @@
+import type { PageAnalysis } from "@/types/docai";
+
 export interface TextElement {
   id: string;
   text: string;
@@ -37,6 +39,17 @@ export interface Slide {
   imageElements: ImageElement[];
   width: number;
   height: number;
+  highResBackgroundBase64?: string;     // 4x scale base64 for high-quality export
+  // New pipeline: analyzed background color
+  backgroundColor?: {
+    type: "solid" | "gradient" | "image";
+    color?: string;           // hex (#RRGGBB) for solid
+    gradientFrom?: string;    // hex start color
+    gradientTo?: string;      // hex end color
+    gradientAngle?: number;   // degrees
+  };
+  // Gemini DocAI analysis result (stored for DSL generation during export)
+  pageAnalysis?: PageAnalysis;
 }
 
 export type OutputFormat = "pptx" | "docx";
@@ -59,7 +72,10 @@ export type ProcessingStatus =
   | { stage: "loading-docx"; progress: number }
   | { stage: "rendering-pages"; current: number; total: number }
   | { stage: "extracting-images"; current: number; total: number }
-  | { stage: "ocr-processing"; current: number; total: number }
+  | { stage: "analyzing"; current: number; total: number }
+  | { stage: "high-res-rendering"; current: number; total: number }
+  | { stage: "generating-dsl"; current: number; total: number }
+  | { stage: "qa-repair"; current: number; total: number }
   | { stage: "complete"; warnings?: string[] };
 
 export type TranslationStatus =

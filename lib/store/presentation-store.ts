@@ -9,6 +9,7 @@ import type {
   TranslationStatus,
   OutputFormat,
 } from "@/types/presentation";
+import type { PageAnalysis, BackgroundInfo } from "@/types/docai";
 
 /** Revoke all Blob URLs held by a presentation to prevent memory leaks */
 function revokePresentationBlobUrls(presentation: Presentation | null) {
@@ -48,18 +49,104 @@ function hasSignificantOverlap(
   return minArea > 0 && intersection / minArea > 0.5;
 }
 
-/** Remove OCR-cropped images that overlap with PDF-embedded images */
+/** Remove DocAI-cropped images that overlap with PDF-embedded images */
 function deduplicateImages(
   pdfImages: ImageElement[],
-  ocrCroppedImages: ImageElement[],
+  croppedImages: ImageElement[],
 ): ImageElement[] {
-  if (pdfImages.length === 0) return ocrCroppedImages;
+  if (pdfImages.length === 0) return croppedImages;
 
-  const deduplicated = ocrCroppedImages.filter((ocrImg) =>
-    !pdfImages.some((pdfImg) => hasSignificantOverlap(ocrImg, pdfImg))
+  const deduplicated = croppedImages.filter((img) =>
+    !pdfImages.some((pdfImg) => hasSignificantOverlap(img, pdfImg))
   );
 
   return deduplicated;
+}
+
+/** Convert Gemini DocAI analysis to TextElement[] for editor display */
+function analysisToTextElements(analysis: PageAnalysis, heightPt: number): TextElement[] {
+  return analysis.textBlocks.map(block => ({
+    id: block.id,
+    text: block.text,
+    textKo: "",
+    textJa: "",
+    x: Math.max(0, Math.min(100, block.bbox.x)),
+    y: Math.max(0, Math.min(100, block.bbox.y)),
+    width: Math.max(1, Math.min(100, block.bbox.width)),
+    height: Math.max(1, Math.min(100, block.bbox.height)),
+    // DocAI fontSize is in pt → convert to % of slide height for editor
+    fontSize: (block.style.fontSize / heightPt) * 100,
+    fontColor: block.style.fontColor || "#000000",
+    fontWeight: block.style.fontWeight || "normal",
+    textAlign: block.style.textAlign || "left",
+    isEdited: false,
+  }));
+}
+
+/** Convert DocAI BackgroundInfo to Slide backgroundColor */
+function analysisToBackgroundColor(bg: BackgroundInfo): Slide["backgroundColor"] {
+  if (bg.type === "solid" && bg.primaryColor) {
+    return {
+      type: "solid",
+      color: bg.primaryColor,
+    };
+  }
+  if (bg.type === "gradient" && bg.primaryColor && bg.secondaryColor) {
+    let angle = 180;
+    if (bg.gradientDirection === "horizontal") angle = 90;
+    else if (bg.gradientDirection === "diagonal") angle = 135;
+    if (bg.gradientAngle !== undefined) angle = bg.gradientAngle;
+    return {
+      type: "gradient",
+      gradientFrom: bg.primaryColor,
+      gradientTo: bg.secondaryColor,
+      gradientAngle: angle,
+    };
+  }
+  if (bg.type === "image") {
+    return { type: "image" };
+  }
+  return undefined;
+}
+
+/** Apply user text edits to PageAnalysis before DSL generation */
+function applyUserEditsToAnalysis(
+  analysis: PageAnalysis,
+  textElements: TextElement[],
+  language: "original" | "ko" | "ja"
+): PageAnalysis {
+  const editedTexts = new Map(
+    textElements.map(el => [el.id, el])
+  );
+
+  return {
+    ...analysis,
+    textBlocks: analysis.textBlocks.map(block => {
+      const edited = editedTexts.get(block.id);
+      if (!edited) return block;
+
+      // Use translated text if available, otherwise original
+      let text = block.text;
+      if (language === "ko" && edited.textKo) {
+        text = edited.textKo;
+      } else if (language === "ja" && edited.textJa) {
+        text = edited.textJa;
+      } else if (edited.isEdited) {
+        text = edited.text;
+      }
+
+      return {
+        ...block,
+        text,
+        bbox: {
+          x: edited.x,
+          y: edited.y,
+          width: edited.width,
+          height: edited.height,
+        },
+      };
+    }),
+  };
 }
 
 interface PresentationStore {
@@ -307,17 +394,115 @@ export const usePresentationStore = create<PresentationStore>((set, get) => ({
     const { presentation } = get();
     if (!presentation) return;
 
+    const hasDocAI = presentation.slides.some(s => s.pageAnalysis);
+
     let blob: Blob;
     let extension: string;
 
-    if (presentation.outputFormat === "docx") {
-      const { generateDocx } = await import("@/lib/export/docx-generator");
-      blob = await generateDocx(presentation.slides, language);
-      extension = ".docx";
+    if (hasDocAI) {
+      // === NEW DSL PIPELINE ===
+      try {
+        const { analysesToPresentationIR } =
+          await import("@/lib/postprocess/to-slide-ir");
+        const { generateSlideDSL } = await import("@/lib/dsl/claude-dsl");
+        const { qaAndRepair } = await import("@/lib/qa/repair");
+        const { generatePptxFromDSL } = await import("@/lib/export/pptx-from-dsl");
+        const { generateDocxFromDSL } = await import("@/lib/export/docx-from-dsl");
+
+        // 1. Collect PageAnalysis data (apply user text edits)
+        const analyses = presentation.slides
+          .filter(s => s.pageAnalysis)
+          .map(s => applyUserEditsToAnalysis(s.pageAnalysis!, s.textElements, language));
+
+        // 2. Convert to PresentationIR
+        const presentationIR = analysesToPresentationIR(presentation.fileName, analyses);
+
+        // 3. Generate DSL for each slide via Claude API
+        const slideDSLs: import("@/types/slide-dsl").SlideDSL[] = [];
+
+        for (let i = 0; i < presentationIR.slides.length; i++) {
+          set({
+            processingStatus: {
+              stage: "generating-dsl",
+              current: i + 1,
+              total: presentationIR.slides.length,
+            },
+          });
+
+          const result = await generateSlideDSL(presentationIR.slides[i]);
+
+          // 4. QA/Repair
+          set({
+            processingStatus: {
+              stage: "qa-repair",
+              current: i + 1,
+              total: presentationIR.slides.length,
+            },
+          });
+
+          const repaired = await qaAndRepair(result.dsl);
+          slideDSLs.push(repaired.dsl);
+
+          console.log(
+            `[Export] Page ${i}: DSL generated in ${result.processingTimeMs}ms, ` +
+            `${repaired.repairAttempts} repairs, ${repaired.issues.length} remaining issues`
+          );
+        }
+
+        // 5. Build PresentationDSL
+        const globalTheme = presentationIR.globalTheme;
+        const presentationDSL: import("@/types/slide-dsl").PresentationDSL = {
+          fileName: presentation.fileName,
+          globalTheme: {
+            palette: {
+              primary: globalTheme.palette.primary,
+              accent: globalTheme.palette.accent,
+              danger: globalTheme.palette.danger,
+              text: globalTheme.palette.text,
+              mutedText: globalTheme.palette.mutedText,
+              bg: globalTheme.palette.background,
+            },
+            fonts: globalTheme.fonts,
+            defaults: globalTheme.defaults,
+          },
+          slides: slideDSLs,
+        };
+
+        // 6. Generate file
+        if (presentation.outputFormat === "docx") {
+          blob = await generateDocxFromDSL(presentationDSL, language);
+          extension = ".docx";
+        } else {
+          blob = await generatePptxFromDSL(presentationDSL, language);
+          extension = ".pptx";
+        }
+
+        set({ processingStatus: { stage: "complete" } });
+      } catch (error) {
+        console.error("[Export] DSL pipeline failed, falling back to legacy:", error);
+        // Fallback to legacy export
+        if (presentation.outputFormat === "docx") {
+          const { generateDocx } = await import("@/lib/export/docx-generator");
+          blob = await generateDocx(presentation.slides, language);
+          extension = ".docx";
+        } else {
+          const { generatePptx } = await import("@/lib/export/pptx-generator");
+          blob = await generatePptx(presentation.slides, language);
+          extension = ".pptx";
+        }
+        set({ processingStatus: { stage: "complete" } });
+      }
     } else {
-      const { generatePptx } = await import("@/lib/export/pptx-generator");
-      blob = await generatePptx(presentation.slides, language);
-      extension = ".pptx";
+      // === LEGACY PATH (no DocAI data) ===
+      if (presentation.outputFormat === "docx") {
+        const { generateDocx } = await import("@/lib/export/docx-generator");
+        blob = await generateDocx(presentation.slides, language);
+        extension = ".docx";
+      } else {
+        const { generatePptx } = await import("@/lib/export/pptx-generator");
+        blob = await generatePptx(presentation.slides, language);
+        extension = ".pptx";
+      }
     }
 
     // Download
@@ -355,13 +540,8 @@ async function loadPdfFile(
     set({ processingStatus: { stage: "loading-pdf", progress: 0 } });
 
     const { loadPdf } = await import("@/lib/pdf/pdf-loader");
-    const { renderPageToImage, tryExtractText } = await import("@/lib/pdf/pdf-renderer");
+    const { renderPageToImage, tryExtractText, renderPageHighRes } = await import("@/lib/pdf/pdf-renderer");
     const { extractImagesFromPage } = await import("@/lib/pdf/image-extractor");
-    const { extractTextWithOcr, resetOcrCircuitBreaker, OcrRateLimitError } = await import("@/lib/pdf/ocr-client");
-    const { cropImageRegions } = await import("@/lib/pdf/image-cropper");
-
-    // Reset circuit breaker for new document
-    resetOcrCircuitBreaker();
 
     const buffer = await file.arrayBuffer();
     const pdfDoc = await loadPdf(buffer);
@@ -376,7 +556,6 @@ async function loadPdfFile(
     });
 
     const slides: Slide[] = [];
-    let ocrErrorMsg: string | null = null;
 
     for (let i = 1; i <= numPages; i++) {
       const page = await pdfDoc.getPage(i);
@@ -389,9 +568,10 @@ async function loadPdfFile(
         },
       });
 
+      // Step 1: Render (KEEP AS-IS)
       const rendered = await renderPageToImage(page);
 
-      // Extract individual images from this page
+      // Step 2: Extract embedded images from PDF (KEEP AS-IS)
       set({
         processingStatus: {
           stage: "extracting-images",
@@ -407,49 +587,63 @@ async function loadPdfFile(
         console.warn(`[Page ${i}] Image extraction failed:`, err);
       }
 
-      // OCR-based extraction: text with font info + image regions
-      // (OCR provides better text grouping, font detection, and text/image separation)
+      // Step 3: Gemini DocAI Analysis (REPLACES OCR)
       set({
         processingStatus: {
-          stage: "ocr-processing",
+          stage: "analyzing",
           current: i,
           total: numPages,
         },
       });
 
       let textElements: TextElement[] = [];
+      let pageAnalysis: PageAnalysis | undefined;
+      let backgroundColor: Slide["backgroundColor"] = undefined;
 
       try {
-        const ocrResult = await extractTextWithOcr(rendered.fullImageBase64);
-        textElements = ocrResult.textElements;
+        const { analyzeSlideWithGemini } = await import("@/lib/docai/client");
 
-        // Crop OCR-detected image regions (diagrams, charts, tables, etc.)
-        // Then deduplicate against PDF-embedded images to avoid showing same image twice
-        if (ocrResult.imageRegions.length > 0) {
+        pageAnalysis = await analyzeSlideWithGemini(
+          rendered.backgroundBase64,  // Higher quality JPEG for analysis
+          i - 1,                       // 0-indexed page
+          rendered.width,              // widthPt
+          rendered.height              // heightPt
+        );
+
+        // Convert analysis → TextElement[] for editor
+        textElements = analysisToTextElements(pageAnalysis, rendered.height);
+
+        // Convert analysis figures → cropped ImageElement[]
+        if (pageAnalysis.figures.length > 0) {
           try {
-            const croppedImages = await cropImageRegions(rendered.fullImage, ocrResult.imageRegions);
-            const uniqueCroppedImages = deduplicateImages(imageElements, croppedImages);
-            imageElements = [...imageElements, ...uniqueCroppedImages];
+            const { cropImageRegions } = await import("@/lib/pdf/image-cropper");
+            const figureRegions = pageAnalysis.figures.map(fig => ({
+              x: fig.bbox.x,
+              y: fig.bbox.y,
+              width: fig.bbox.width,
+              height: fig.bbox.height,
+            }));
+            const croppedFigures = await cropImageRegions(rendered.fullImage, figureRegions);
+            const uniqueFigures = deduplicateImages(imageElements, croppedFigures);
+            imageElements = [...imageElements, ...uniqueFigures];
           } catch (cropErr) {
-            console.warn(`[Page ${i}] Image region cropping failed:`, cropErr);
+            console.warn(`[Page ${i}] Figure cropping failed:`, cropErr);
           }
         }
 
-        console.log(`[Page ${i}] OCR: ${textElements.length} texts, ${imageElements.length} images`);
+        // Extract background color from DocAI analysis
+        backgroundColor = analysisToBackgroundColor(pageAnalysis.background);
+
+        console.log(
+          `[Page ${i}] DocAI: ${textElements.length} texts, ${imageElements.length} images, ` +
+          `bg=${backgroundColor?.type || "none"}`
+        );
       } catch (err) {
         const errMsg = err instanceof Error ? err.message : String(err);
-        const isCircuitBreaker = err instanceof OcrRateLimitError;
-        console.warn(`[Page ${i}] OCR failed${isCircuitBreaker ? " (circuit breaker)" : ""}:`, errMsg);
+        console.warn(`[Page ${i}] DocAI analysis failed:`, errMsg);
+        warnings.push(`DocAI 분석 실패 (페이지 ${i}): ${errMsg}`);
 
-        // Record OCR error
-        if (!ocrErrorMsg) {
-          ocrErrorMsg = errMsg;
-          warnings.push(isCircuitBreaker
-            ? "OCR 실패: API 한도 초과"
-            : `OCR 실패: ${errMsg}`);
-        }
-
-        // Fallback: text layer extraction when OCR fails
+        // Fallback: try text layer extraction
         try {
           const { hasText } = await tryExtractText(page);
           if (hasText) {
@@ -469,6 +663,24 @@ async function loadPdfFile(
         warnings.push("내보내기 시 페이지 이미지가 포함됩니다.");
       }
 
+      // --- Stage 3: High-res rendering (4x scale for export quality) ---
+      let highResBackgroundBase64: string | undefined;
+
+      set({
+        processingStatus: {
+          stage: "high-res-rendering",
+          current: i,
+          total: numPages,
+        },
+      });
+
+      try {
+        const highRes = await renderPageHighRes(page, 4.0);
+        highResBackgroundBase64 = highRes.highResBase64;
+      } catch (err) {
+        console.warn(`[Page ${i}] High-res rendering failed:`, err);
+      }
+
       slides.push({
         id: uuidv4(),
         pageIndex: i - 1,
@@ -479,6 +691,9 @@ async function loadPdfFile(
         imageElements,
         width: rendered.width,
         height: rendered.height,
+        highResBackgroundBase64,
+        backgroundColor,
+        pageAnalysis,  // Store for DSL generation during export
       });
     }
 

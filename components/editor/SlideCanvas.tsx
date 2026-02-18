@@ -49,17 +49,26 @@ export default function SlideCanvas({
         } as React.CSSProperties}
         onClick={handleCanvasClick}
       >
-        {/* Background image - shown as faint reference when elements are extracted */}
-        <Image
-          src={slide.backgroundImage}
-          alt={`Slide ${slide.pageIndex + 1}`}
-          fill
-          className={`object-contain pointer-events-none ${
-            hasExtractedElements ? "opacity-0" : "opacity-100"
-          }`}
-          unoptimized
-          priority
-        />
+        {/* Background: solid color/gradient when analyzed, image otherwise */}
+        {hasExtractedElements && slide.backgroundColor && slide.backgroundColor.type !== "image" ? (
+          <div
+            className="absolute inset-0"
+            style={{
+              background: slide.backgroundColor.type === "solid"
+                ? slide.backgroundColor.color
+                : `linear-gradient(${slide.backgroundColor.gradientAngle || 180}deg, ${slide.backgroundColor.gradientFrom}, ${slide.backgroundColor.gradientTo})`,
+            }}
+          />
+        ) : (
+          <Image
+            src={slide.backgroundImage}
+            alt={`Slide ${slide.pageIndex + 1}`}
+            fill
+            className="object-contain pointer-events-none"
+            unoptimized
+            priority
+          />
+        )}
 
         {/* Extraction failure notice */}
         {!hasExtractedElements && (

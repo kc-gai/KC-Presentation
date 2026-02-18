@@ -8,7 +8,8 @@ export async function translateTexts(
 ): Promise<string[]> {
   if (texts.length === 0) return [];
 
-  const response = await fetch("/api/translate", {
+  const basePath = process.env.NEXT_PUBLIC_BASE_PATH || "/presentation";
+  const response = await fetch(`${basePath}/api/translate`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json; charset=utf-8",

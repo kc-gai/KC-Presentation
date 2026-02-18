@@ -87,8 +87,14 @@ export default function FileUploader() {
         return `${t("status.renderingPages")} (${processingStatus.current}/${processingStatus.total})`;
       case "extracting-images":
         return `${t("status.extractingImages")} (${processingStatus.current}/${processingStatus.total})`;
-      case "ocr-processing":
-        return `${t("status.ocrProcessing")} (${processingStatus.current}/${processingStatus.total})`;
+      case "analyzing":
+        return `${t("status.analyzing")} (${processingStatus.current}/${processingStatus.total})`;
+      case "high-res-rendering":
+        return `${t("status.highres")} (${processingStatus.current}/${processingStatus.total})`;
+      case "generating-dsl":
+        return `${t("status.generatingDsl")} (${processingStatus.current}/${processingStatus.total})`;
+      case "qa-repair":
+        return `${t("status.qaRepair")} (${processingStatus.current}/${processingStatus.total})`;
       default:
         return "";
     }
@@ -191,10 +197,9 @@ export default function FileUploader() {
                 />
               </div>
             )}
-            {processingStatus.stage === "ocr-processing" && (
+            {processingStatus.stage === "analyzing" && (
               <div className="text-xs text-muted text-left mt-2 max-w-xs space-y-1">
-                <p>{t("status.ocrHint")}</p>
-                <p>{t("status.recommendPdf")}</p>
+                <p>{t("status.analyzingHint")}</p>
               </div>
             )}
           </>
