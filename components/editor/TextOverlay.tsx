@@ -7,6 +7,7 @@ import type { TextElement } from "@/types/presentation";
 interface TextOverlayProps {
   element: TextElement;
   activeLanguage: "original" | "ko" | "ja";
+  canvasHeight: number;
   isSelected: boolean;
   onSelect: () => void;
   onUpdate: (updates: Partial<TextElement>) => void;
@@ -16,6 +17,7 @@ interface TextOverlayProps {
 export default function TextOverlay({
   element,
   activeLanguage,
+  canvasHeight,
   isSelected,
   onSelect,
   onUpdate,
@@ -37,6 +39,12 @@ export default function TextOverlay({
     }
   })();
 
+  // Compute pixel font size from % of slide height
+  // element.fontSize is stored as (pt / heightPt) * 100 = % of slide height
+  const pixelFontSize = canvasHeight > 0
+    ? (element.fontSize / 100) * canvasHeight
+    : 16; // fallback
+
   const handleDoubleClick = useCallback(
     (e: React.MouseEvent) => {
       e.stopPropagation();
@@ -45,7 +53,6 @@ export default function TextOverlay({
       setTimeout(() => {
         if (textRef.current) {
           textRef.current.focus();
-          // Select all text
           const range = document.createRange();
           range.selectNodeContents(textRef.current);
           const sel = window.getSelection();
@@ -77,7 +84,6 @@ export default function TextOverlay({
         setIsEditing(false);
         textRef.current?.blur();
       }
-      // Delete on Backspace when selected but not editing
       if (e.key === "Delete" && isSelected && !isEditing) {
         onDelete();
       }
@@ -138,12 +144,12 @@ export default function TextOverlay({
       onKeyDown={handleKeyDown}
       tabIndex={0}
     >
-      {/* Border indicator */}
+      {/* Selection indicator — only visible when selected or hovered */}
       <div
         className={`absolute inset-0 rounded-sm transition-all pointer-events-none ${
           isSelected
-            ? "border-2 border-primary bg-blue-500/10"
-            : "border border-transparent hover:border-primary/40 hover:bg-blue-500/5"
+            ? "border-2 border-primary bg-blue-500/5"
+            : "border border-transparent group-hover:border-primary/30"
         }`}
       />
 
@@ -158,7 +164,7 @@ export default function TextOverlay({
           ${isEditing ? "outline-none ring-2 ring-primary bg-white/90 rounded-sm p-0.5" : ""}
         `}
         style={{
-          fontSize: `${element.fontSize}cqh`,
+          fontSize: `${pixelFontSize}px`,
           color: element.fontColor,
           fontWeight: element.fontWeight,
           textAlign: element.textAlign,

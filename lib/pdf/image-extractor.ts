@@ -110,8 +110,12 @@ export async function extractImagesFromPage(
 
       try {
         const imgData = await new Promise<ExtractedImage>((resolve, reject) => {
+          const timeout = setTimeout(() => {
+            reject(new Error(`Image ${imgName} timed out (5s)`));
+          }, 5000);
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           (page as any).objs.get(imgName, (data: ExtractedImage | null) => {
+            clearTimeout(timeout);
             if (data) resolve(data);
             else reject(new Error(`Image ${imgName} not found`));
           });

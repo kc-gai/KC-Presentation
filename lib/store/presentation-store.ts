@@ -9,7 +9,6 @@ import type {
   TranslationStatus,
   OutputFormat,
 } from "@/types/presentation";
-import type { PageAnalysis, BackgroundInfo } from "@/types/docai";
 
 /** Revoke all Blob URLs held by a presentation to prevent memory leaks */
 function revokePresentationBlobUrls(presentation: Presentation | null) {
@@ -47,106 +46,6 @@ function hasSignificantOverlap(
 
   // Overlap > 50% of the smaller region
   return minArea > 0 && intersection / minArea > 0.5;
-}
-
-/** Remove DocAI-cropped images that overlap with PDF-embedded images */
-function deduplicateImages(
-  pdfImages: ImageElement[],
-  croppedImages: ImageElement[],
-): ImageElement[] {
-  if (pdfImages.length === 0) return croppedImages;
-
-  const deduplicated = croppedImages.filter((img) =>
-    !pdfImages.some((pdfImg) => hasSignificantOverlap(img, pdfImg))
-  );
-
-  return deduplicated;
-}
-
-/** Convert Gemini DocAI analysis to TextElement[] for editor display */
-function analysisToTextElements(analysis: PageAnalysis, heightPt: number): TextElement[] {
-  return analysis.textBlocks.map(block => ({
-    id: block.id,
-    text: block.text,
-    textKo: "",
-    textJa: "",
-    x: Math.max(0, Math.min(100, block.bbox.x)),
-    y: Math.max(0, Math.min(100, block.bbox.y)),
-    width: Math.max(1, Math.min(100, block.bbox.width)),
-    height: Math.max(1, Math.min(100, block.bbox.height)),
-    // DocAI fontSize is in pt → convert to % of slide height for editor
-    fontSize: (block.style.fontSize / heightPt) * 100,
-    fontColor: block.style.fontColor || "#000000",
-    fontWeight: block.style.fontWeight || "normal",
-    textAlign: block.style.textAlign || "left",
-    isEdited: false,
-  }));
-}
-
-/** Convert DocAI BackgroundInfo to Slide backgroundColor */
-function analysisToBackgroundColor(bg: BackgroundInfo): Slide["backgroundColor"] {
-  if (bg.type === "solid" && bg.primaryColor) {
-    return {
-      type: "solid",
-      color: bg.primaryColor,
-    };
-  }
-  if (bg.type === "gradient" && bg.primaryColor && bg.secondaryColor) {
-    let angle = 180;
-    if (bg.gradientDirection === "horizontal") angle = 90;
-    else if (bg.gradientDirection === "diagonal") angle = 135;
-    if (bg.gradientAngle !== undefined) angle = bg.gradientAngle;
-    return {
-      type: "gradient",
-      gradientFrom: bg.primaryColor,
-      gradientTo: bg.secondaryColor,
-      gradientAngle: angle,
-    };
-  }
-  if (bg.type === "image") {
-    return { type: "image" };
-  }
-  return undefined;
-}
-
-/** Apply user text edits to PageAnalysis before DSL generation */
-function applyUserEditsToAnalysis(
-  analysis: PageAnalysis,
-  textElements: TextElement[],
-  language: "original" | "ko" | "ja"
-): PageAnalysis {
-  const editedTexts = new Map(
-    textElements.map(el => [el.id, el])
-  );
-
-  return {
-    ...analysis,
-    textBlocks: analysis.textBlocks.map(block => {
-      const edited = editedTexts.get(block.id);
-      if (!edited) return block;
-
-      // Use translated text if available, otherwise original
-      let text = block.text;
-      if (language === "ko" && edited.textKo) {
-        text = edited.textKo;
-      } else if (language === "ja" && edited.textJa) {
-        text = edited.textJa;
-      } else if (edited.isEdited) {
-        text = edited.text;
-      }
-
-      return {
-        ...block,
-        text,
-        bbox: {
-          x: edited.x,
-          y: edited.y,
-          width: edited.width,
-          height: edited.height,
-        },
-      };
-    }),
-  };
 }
 
 interface PresentationStore {
@@ -394,116 +293,22 @@ export const usePresentationStore = create<PresentationStore>((set, get) => ({
     const { presentation } = get();
     if (!presentation) return;
 
-    const hasDocAI = presentation.slides.some(s => s.pageAnalysis);
+    set({ processingStatus: { stage: "generating-dsl", current: 1, total: 1 } });
 
     let blob: Blob;
     let extension: string;
 
-    if (hasDocAI) {
-      // === NEW DSL PIPELINE ===
-      try {
-        const { analysesToPresentationIR } =
-          await import("@/lib/postprocess/to-slide-ir");
-        const { generateSlideDSL } = await import("@/lib/dsl/claude-dsl");
-        const { qaAndRepair } = await import("@/lib/qa/repair");
-        const { generatePptxFromDSL } = await import("@/lib/export/pptx-from-dsl");
-        const { generateDocxFromDSL } = await import("@/lib/export/docx-from-dsl");
-
-        // 1. Collect PageAnalysis data (apply user text edits)
-        const analyses = presentation.slides
-          .filter(s => s.pageAnalysis)
-          .map(s => applyUserEditsToAnalysis(s.pageAnalysis!, s.textElements, language));
-
-        // 2. Convert to PresentationIR
-        const presentationIR = analysesToPresentationIR(presentation.fileName, analyses);
-
-        // 3. Generate DSL for each slide via Claude API
-        const slideDSLs: import("@/types/slide-dsl").SlideDSL[] = [];
-
-        for (let i = 0; i < presentationIR.slides.length; i++) {
-          set({
-            processingStatus: {
-              stage: "generating-dsl",
-              current: i + 1,
-              total: presentationIR.slides.length,
-            },
-          });
-
-          const result = await generateSlideDSL(presentationIR.slides[i]);
-
-          // 4. QA/Repair
-          set({
-            processingStatus: {
-              stage: "qa-repair",
-              current: i + 1,
-              total: presentationIR.slides.length,
-            },
-          });
-
-          const repaired = await qaAndRepair(result.dsl);
-          slideDSLs.push(repaired.dsl);
-
-          console.log(
-            `[Export] Page ${i}: DSL generated in ${result.processingTimeMs}ms, ` +
-            `${repaired.repairAttempts} repairs, ${repaired.issues.length} remaining issues`
-          );
-        }
-
-        // 5. Build PresentationDSL
-        const globalTheme = presentationIR.globalTheme;
-        const presentationDSL: import("@/types/slide-dsl").PresentationDSL = {
-          fileName: presentation.fileName,
-          globalTheme: {
-            palette: {
-              primary: globalTheme.palette.primary,
-              accent: globalTheme.palette.accent,
-              danger: globalTheme.palette.danger,
-              text: globalTheme.palette.text,
-              mutedText: globalTheme.palette.mutedText,
-              bg: globalTheme.palette.background,
-            },
-            fonts: globalTheme.fonts,
-            defaults: globalTheme.defaults,
-          },
-          slides: slideDSLs,
-        };
-
-        // 6. Generate file
-        if (presentation.outputFormat === "docx") {
-          blob = await generateDocxFromDSL(presentationDSL, language);
-          extension = ".docx";
-        } else {
-          blob = await generatePptxFromDSL(presentationDSL, language);
-          extension = ".pptx";
-        }
-
-        set({ processingStatus: { stage: "complete" } });
-      } catch (error) {
-        console.error("[Export] DSL pipeline failed, falling back to legacy:", error);
-        // Fallback to legacy export
-        if (presentation.outputFormat === "docx") {
-          const { generateDocx } = await import("@/lib/export/docx-generator");
-          blob = await generateDocx(presentation.slides, language);
-          extension = ".docx";
-        } else {
-          const { generatePptx } = await import("@/lib/export/pptx-generator");
-          blob = await generatePptx(presentation.slides, language);
-          extension = ".pptx";
-        }
-        set({ processingStatus: { stage: "complete" } });
-      }
+    if (presentation.outputFormat === "docx") {
+      const { generateDocx } = await import("@/lib/export/docx-generator");
+      blob = await generateDocx(presentation.slides, language);
+      extension = ".docx";
     } else {
-      // === LEGACY PATH (no DocAI data) ===
-      if (presentation.outputFormat === "docx") {
-        const { generateDocx } = await import("@/lib/export/docx-generator");
-        blob = await generateDocx(presentation.slides, language);
-        extension = ".docx";
-      } else {
-        const { generatePptx } = await import("@/lib/export/pptx-generator");
-        blob = await generatePptx(presentation.slides, language);
-        extension = ".pptx";
-      }
+      const { generatePptxDirect } = await import("@/lib/export/pptx-direct");
+      blob = await generatePptxDirect(presentation.slides, language);
+      extension = ".pptx";
     }
+
+    set({ processingStatus: { stage: "complete" } });
 
     // Download
     const url = URL.createObjectURL(blob);
@@ -541,7 +346,6 @@ async function loadPdfFile(
 
     const { loadPdf } = await import("@/lib/pdf/pdf-loader");
     const { renderPageToImage, tryExtractText, renderPageHighRes } = await import("@/lib/pdf/pdf-renderer");
-    const { extractImagesFromPage } = await import("@/lib/pdf/image-extractor");
 
     const buffer = await file.arrayBuffer();
     const pdfDoc = await loadPdf(buffer);
@@ -571,23 +375,7 @@ async function loadPdfFile(
       // Step 1: Render (KEEP AS-IS)
       const rendered = await renderPageToImage(page);
 
-      // Step 2: Extract embedded images from PDF (KEEP AS-IS)
-      set({
-        processingStatus: {
-          stage: "extracting-images",
-          current: i,
-          total: numPages,
-        },
-      });
-
-      let imageElements: ImageElement[] = [];
-      try {
-        imageElements = await extractImagesFromPage(page);
-      } catch (err) {
-        console.warn(`[Page ${i}] Image extraction failed:`, err);
-      }
-
-      // Step 3: Gemini DocAI Analysis (REPLACES OCR)
+      // Step 2: Native text + image extraction (NO LLM)
       set({
         processingStatus: {
           stage: "analyzing",
@@ -597,70 +385,65 @@ async function loadPdfFile(
       });
 
       let textElements: TextElement[] = [];
-      let pageAnalysis: PageAnalysis | undefined;
-      let backgroundColor: Slide["backgroundColor"] = undefined;
+      let imageElements: ImageElement[] = [];
 
       try {
-        const { analyzeSlideWithGemini } = await import("@/lib/docai/client");
-
-        pageAnalysis = await analyzeSlideWithGemini(
-          rendered.backgroundBase64,  // Higher quality JPEG for analysis
-          i - 1,                       // 0-indexed page
-          rendered.width,              // widthPt
-          rendered.height              // heightPt
-        );
-
-        // Convert analysis → TextElement[] for editor
-        textElements = analysisToTextElements(pageAnalysis, rendered.height);
-
-        // Convert analysis figures → cropped ImageElement[]
-        if (pageAnalysis.figures.length > 0) {
-          try {
-            const { cropImageRegions } = await import("@/lib/pdf/image-cropper");
-            const figureRegions = pageAnalysis.figures.map(fig => ({
-              x: fig.bbox.x,
-              y: fig.bbox.y,
-              width: fig.bbox.width,
-              height: fig.bbox.height,
-            }));
-            const croppedFigures = await cropImageRegions(rendered.fullImage, figureRegions);
-            const uniqueFigures = deduplicateImages(imageElements, croppedFigures);
-            imageElements = [...imageElements, ...uniqueFigures];
-          } catch (cropErr) {
-            console.warn(`[Page ${i}] Figure cropping failed:`, cropErr);
-          }
-        }
-
-        // Extract background color from DocAI analysis
-        backgroundColor = analysisToBackgroundColor(pageAnalysis.background);
+        const { extractPageNative } = await import("@/lib/pdf/native-extractor");
+        const nativeResult = await extractPageNative(page);
+        textElements = nativeResult.textElements;
+        imageElements = nativeResult.imageElements;
 
         console.log(
-          `[Page ${i}] DocAI: ${textElements.length} texts, ${imageElements.length} images, ` +
-          `bg=${backgroundColor?.type || "none"}`
+          `[Page ${i}] Native: ${textElements.length} texts, ${imageElements.length} images`
         );
       } catch (err) {
-        const errMsg = err instanceof Error ? err.message : String(err);
-        console.warn(`[Page ${i}] DocAI analysis failed:`, errMsg);
-        warnings.push(`DocAI 분석 실패 (페이지 ${i}): ${errMsg}`);
-
-        // Fallback: try text layer extraction
-        try {
-          const { hasText } = await tryExtractText(page);
-          if (hasText) {
-            const content = await page.getTextContent();
-            const viewport = page.getViewport({ scale: 1.0 });
-            textElements = buildTextLayerElements(content, viewport);
-            console.log(`[Page ${i}] Fallback text layer: ${textElements.length} elements`);
-          }
-        } catch (textErr) {
-          console.warn(`[Page ${i}] Text layer fallback also failed:`, textErr);
-        }
+        console.warn(`[Page ${i}] Native extraction error:`, err);
       }
 
-      // Report extraction failure for first page
-      if (i === 1 && textElements.length === 0 && imageElements.length === 0) {
-        warnings.push("텍스트/이미지 추출 실패");
-        warnings.push("내보내기 시 페이지 이미지가 포함됩니다.");
+      // Fallback: if native extraction found 0 text, try Gemini OCR
+      if (textElements.length === 0) {
+        console.log(`[Page ${i}] No native text found, trying Gemini OCR fallback...`);
+        try {
+          const basePath = process.env.NEXT_PUBLIC_BASE_PATH || "/presentation";
+          const ocrResult = await fetch(`${basePath}/api/ocr-fallback`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              imageBase64: rendered.backgroundBase64,
+              pageWidth: rendered.width,
+              pageHeight: rendered.height,
+            }),
+          });
+          if (ocrResult.ok) {
+            const { blocks } = await ocrResult.json();
+            if (Array.isArray(blocks) && blocks.length > 0) {
+              textElements = blocks.map((block: {
+                text: string; x: number; y: number;
+                width: number; height: number;
+                fontSize?: number; fontWeight?: string;
+              }) => ({
+                id: uuidv4(),
+                text: block.text || "",
+                textKo: "",
+                textJa: "",
+                x: Math.max(0, Math.min(100, block.x)),
+                y: Math.max(0, Math.min(100, block.y)),
+                width: Math.max(1, Math.min(100, block.width)),
+                height: Math.max(1, Math.min(100, block.height)),
+                fontSize: block.fontSize
+                  ? (block.fontSize / rendered.height) * 100
+                  : 3,
+                fontColor: "#000000",
+                fontWeight: (block.fontWeight === "bold" ? "bold" : "normal") as "bold" | "normal",
+                textAlign: "left" as const,
+                isEdited: false,
+              }));
+              console.log(`[Page ${i}] Gemini OCR fallback: ${textElements.length} texts`);
+            }
+          }
+        } catch (ocrErr) {
+          console.warn(`[Page ${i}] Gemini OCR fallback failed:`, ocrErr);
+        }
       }
 
       // --- Stage 3: High-res rendering (4x scale for export quality) ---
@@ -692,8 +475,8 @@ async function loadPdfFile(
         width: rendered.width,
         height: rendered.height,
         highResBackgroundBase64,
-        backgroundColor,
-        pageAnalysis,  // Store for DSL generation during export
+        backgroundColor: undefined,
+        pageAnalysis: undefined,
       });
     }
 

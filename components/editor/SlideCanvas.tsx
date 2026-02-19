@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback } from "react";
+import { useState, useCallback, useRef, useEffect } from "react";
 import Image from "next/image";
 import { ImageOff } from "lucide-react";
 import TextOverlay from "./TextOverlay";
@@ -26,7 +26,23 @@ export default function SlideCanvas({
   onDeleteImageElement,
 }: SlideCanvasProps) {
   const [selectedElementId, setSelectedElementId] = useState<string | null>(null);
+  const [canvasHeight, setCanvasHeight] = useState(0);
+  const canvasRef = useRef<HTMLDivElement>(null);
   const { t } = useI18n();
+
+  // Track canvas actual rendered height for font size scaling
+  useEffect(() => {
+    const el = canvasRef.current;
+    if (!el) return;
+
+    const observer = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        setCanvasHeight(entry.contentRect.height);
+      }
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
 
   const handleCanvasClick = useCallback(() => {
     setSelectedElementId(null);
@@ -35,31 +51,39 @@ export default function SlideCanvas({
   const aspectRatio = slide.width / slide.height;
   const hasExtractedElements = slide.imageElements.length > 0 || slide.textElements.length > 0;
 
+  // Build CSS background from DocAI analysis
+  const bgStyle: React.CSSProperties = {};
+  if (hasExtractedElements && slide.backgroundColor) {
+    if (slide.backgroundColor.type === "solid" && slide.backgroundColor.color) {
+      bgStyle.backgroundColor = slide.backgroundColor.color;
+    } else if (
+      slide.backgroundColor.type === "gradient" &&
+      slide.backgroundColor.gradientFrom &&
+      slide.backgroundColor.gradientTo
+    ) {
+      const angle = slide.backgroundColor.gradientAngle ?? 180;
+      bgStyle.background = `linear-gradient(${angle}deg, ${slide.backgroundColor.gradientFrom}, ${slide.backgroundColor.gradientTo})`;
+    }
+  }
+
   return (
     <div className="flex items-center justify-center w-full h-full p-4">
       <div
+        ref={canvasRef}
         data-slide-canvas
-        className="relative bg-white shadow-lg rounded-lg overflow-hidden"
+        className="relative shadow-lg rounded-lg overflow-hidden"
         style={{
-          containerType: "size",
           aspectRatio: `${aspectRatio}`,
           maxWidth: "100%",
           maxHeight: "100%",
           width: "100%",
-        } as React.CSSProperties}
+          backgroundColor: bgStyle.backgroundColor || "#ffffff",
+          background: bgStyle.background || undefined,
+        }}
         onClick={handleCanvasClick}
       >
-        {/* Background: solid color/gradient when analyzed, image otherwise */}
-        {hasExtractedElements && slide.backgroundColor && slide.backgroundColor.type !== "image" ? (
-          <div
-            className="absolute inset-0"
-            style={{
-              background: slide.backgroundColor.type === "solid"
-                ? slide.backgroundColor.color
-                : `linear-gradient(${slide.backgroundColor.gradientAngle || 180}deg, ${slide.backgroundColor.gradientFrom}, ${slide.backgroundColor.gradientTo})`,
-            }}
-          />
-        ) : (
+        {/* Background image: shown ONLY when no extracted elements (fallback) */}
+        {!hasExtractedElements && (
           <Image
             src={slide.backgroundImage}
             alt={`Slide ${slide.pageIndex + 1}`}
@@ -101,6 +125,7 @@ export default function SlideCanvas({
             key={element.id}
             element={element}
             activeLanguage={activeLanguage}
+            canvasHeight={canvasHeight}
             isSelected={selectedElementId === element.id}
             onSelect={() => setSelectedElementId(element.id)}
             onUpdate={(updates) => onUpdateElement(element.id, updates)}
